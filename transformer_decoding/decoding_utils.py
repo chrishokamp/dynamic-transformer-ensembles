@@ -1,9 +1,14 @@
+from collections import OrderedDict
 
-from transformers import modeling_utils
+import torch
 from torch.nn import functional as F
 
-from collections import OrderedDict
-import torch
+from transformers import modeling_utils
+
+from transformer_decoding import log
+
+
+logger = log.create_logger(__name__)
 
 
 def initialize_generation(
@@ -174,6 +179,11 @@ def initialize_generation(
             effective_batch_size * num_beams, input_ids_len
         )  # shape: (batch_size * num_return_sequences * num_beams, cur_len)
 
+    # Chris: note this is important distinction between decoder-only and
+    # encoder-decoder architectures, for encoder-decoder models, decoder state
+    # is initialized with decoder BOS token, for decoder-only models, it's the whole
+    # input_ids as passed to this function
+    # Note: in the current formulation this precludes prefix-completion usecases by definition
     if model.config.is_encoder_decoder:
         # create empty decoder_input_ids
         input_ids = torch.full(
@@ -249,12 +259,475 @@ def get_initial_decoding_state(text, model, tokenizer, decoding_hyperparams):
         max_length=decoding_hyperparams['max_length'],
         return_tensors='pt'
     )
+    # TODO: working here: what exactly are `input_ids`?
     input_ids = inputs['input_ids']
 
     return initialize_generation(
         model, input_ids,
         **decoding_hyperparams
     )
+
+
+def outputs_from_state(state):
+    model_inputs = state['model'].prepare_inputs_for_generation(
+        state['input_ids'],
+        past=state['past'],
+        attention_mask=state['attention_mask'])
+    outputs = state['model'](**model_inputs)  # (batch_size * num_beams, cur_len, vocab_size)
+    return outputs
+
+
+# working: think through ensembled_beam_search_step
+def ensembled_beam_search_step(component_states, ensemble_state):
+    """
+    Decoding hyperparams live in ensemble_state
+    """
+
+    for state in component_states:
+        state['outputs'] = outputs_from_state(state)
+        state['next_token_logits'] = state['outputs'][0][:, -1, :]  # (batch_size * num_beams, vocab_size)
+
+        # if model has past, then set the past variable to speed up decoding
+        if state['model']._do_output_past(state['outputs']):
+            state['past'] = state['outputs'][1]
+
+        # repetition penalty (from CTRL paper https://arxiv.org/abs/1909.05858)
+        if state['repetition_penalty'] != 1.0:
+            state['model'].enforce_repetition_penalty_(
+                state['next_token_logits'],
+                ensemble_state['batch_size'],
+                ensemble_state['num_beams'],
+                state['input_ids'],
+                ensemble_state['repetition_penalty']
+            )
+
+        if ensemble_state['temperature'] != 1.0:
+            state['next_token_logits'] = state['next_token_logits'] / ensemble_state['temperature']
+
+        state['scores'] = F.log_softmax(state['next_token_logits'], dim=-1)  # (batch_size * num_beams, vocab_size)
+        if state['model'].config.is_encoder_decoder and ensemble_state['do_sample'] is False:
+            # TODO (PVP) still a bit hacky here - there might be a better solution
+            state['scores'] = state['model'].prepare_scores_for_generation(
+                state['scores'],
+                cur_len=state['cur_len'],
+                max_length=state['max_length'])
+
+        # set state's eos token prob to zero if min_length is not reached
+        if ensemble_state['eos_token_id'] is not None and ensemble_state['cur_len'] < ensemble_state['min_length']:
+            state['scores'][:, state['eos_token_id']] = -float("inf")
+
+        if ensemble_state['no_repeat_ngram_size'] > 0:
+            # calculate a list of banned tokens to prevent repetitively generating the same ngrams
+            num_batch_hypotheses = ensemble_state['batch_size'] * ensemble_state['num_beams']
+            # from fairseq: https://github.com/pytorch/fairseq/blob/a07cb6f40480928c9e0548b737aadd36ee66ac76/fairseq/sequence_generator.py#L345
+            banned_batch_tokens = modeling_utils.calc_banned_ngram_tokens(
+                ensemble_state['input_ids'],
+                num_batch_hypotheses,
+                ensemble_state['no_repeat_ngram_size'],
+                ensemble_state['cur_len']
+            )
+            for i, banned_tokens in enumerate(banned_batch_tokens):
+                state['scores'][i, banned_tokens] = -float("inf")
+
+        if ensemble_state['bad_words_ids'] is not None:
+            # calculate a list of banned tokens according to bad words
+            banned_tokens = modeling_utils.calc_banned_bad_words_ids(
+                ensemble_state['input_ids'],
+                ensemble_state['bad_words_ids']
+            )
+
+            for i, banned_tokens in enumerate(banned_tokens):
+                state['scores'][i, banned_tokens] = -float("inf")
+
+        assert state['scores'].shape == (
+            ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size']), "Shapes of scores: {} != {}".format(
+            state['scores'].shape, (ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size'])
+        )
+
+    # CHRIS: WORKING HERE
+    # - assume (and enforce) that component state input_ids are always the same as ensemble state's input_ids
+    # - note potential complexity in re-ordering due to individual model's different encoder_outputs
+
+    # TODO: now we have attached scores to every individual model's state, let's proceed to update the ensemble state
+    # TODO: note individual models should not need to care about beam search outside of the necessary reordering of inputs
+
+    # Chris: ok, now we have the scores from this (model, text) pair, let's return them and ensemble before
+    #  continuing.
+    # Chris: let's create a wrapper that holds pairs of model, text
+    # Chris: let's create a new type of hypothesis which stores additional metadata in the beam
+    # Chris: same structure as beam, but stores arbitrary meta-data in each cell -- WORKING: what is the "timestamp metatdata?"
+
+    # TODO: now call the reduce function over all state['scores'], this will give us ensemble_state['scores']
+    # REDUCE SCORES AND SET ONTO ENSEMBLE STATE
+    # from old implementation:
+    #ensembled_log_probs = \
+    #    torch.mean(
+    #        timestep_weights[:, None] * torch.squeeze(torch.stack(cohort_log_probs)),
+    #        dim=0
+    #    )[None, :]
+
+    # TEMP
+    # TODO: just simple mean of logprobs as first try, later more sophisticated weighting
+    ensemble_state['scores'] = torch.mean(torch.stack([s['scores'] for s in component_states]), dim=0)
+    # END TEMP
+
+    # BEGIN: ways of selecting next token from scores
+    if ensemble_state['do_sample']:
+        # TEMP
+        pass
+        # END TEMP
+
+        _scores = scores + state['beam_scores'][:, None].expand_as(scores)  # (batch_size * num_beams, vocab_size)
+        # Top-p/top-k filtering
+        # Chris: note hard-coded `min_tokens_to_keep`
+        _scores = modeling_utils.top_k_top_p_filtering(
+            _scores, top_k=state['top_k'], top_p=state['top_p'], min_tokens_to_keep=2
+        )  # (batch_size * num_beams, vocab_size)
+        # re-organize to group the beam together to sample from all beam_idxs
+        _scores = _scores.contiguous().view(
+            state['batch_size'], state['num_beams'] * state['vocab_size']
+        )  # (batch_size, num_beams * vocab_size)
+
+        # Sample 2 next tokens for each beam (so we have some spare tokens and match output of greedy beam search)
+        probs = F.softmax(_scores, dim=-1)
+        next_tokens = torch.multinomial(probs, num_samples=2 * state['num_beams'])  # (batch_size, num_beams * 2)
+        # Compute next scores
+        next_scores = torch.gather(_scores, -1, next_tokens)  # (batch_size, num_beams * 2)
+        # sort the sampled vector to make sure that the first num_beams samples are the best
+        next_scores, next_scores_indices = torch.sort(next_scores, descending=True, dim=1)
+        next_tokens = torch.gather(next_tokens, -1, next_scores_indices)  # (batch_size, num_beams * 2)
+
+    else:
+        next_scores = ensemble_state['scores'] + ensemble_state['beam_scores'][:, None].expand_as(ensemble_state['scores'])  # (batch_size * num_beams, vocab_size)
+
+        # re-organize to group the beam together (we are keeping top hypotheses across beams)
+        next_scores = next_scores.view(
+            ensemble_state['batch_size'], ensemble_state['num_beams'] * ensemble_state['vocab_size']
+        )  # (batch_size, num_beams * vocab_size)
+
+        next_scores, next_tokens = \
+            torch.topk(
+                next_scores,
+                2 * ensemble_state['num_beams'],
+                dim=1,
+                largest=True,
+                sorted=True
+            )
+
+    assert next_scores.size() == next_tokens.size() == (ensemble_state['batch_size'], 2 * ensemble_state['num_beams'])
+    # NEXT TOKEN CANDIDATES HAVE BEEN SELECTED
+
+    # BEGIN: UPDATING SEARCH STATE
+    # next batch beam content
+    next_batch_beam = []
+
+    # for each sentence
+    for batch_idx in range(ensemble_state['batch_size']):
+
+        # if we are done with this sentence
+        if ensemble_state['done'][batch_idx]:
+            assert (
+                    len(ensemble_state['generated_hyps'][batch_idx]) >= ensemble_state['num_beams']
+            ), "Batch can only be done if at least {} beams have been generated".format(state['num_beams'])
+            assert (
+                    ensemble_state['eos_token_id'] is not None and ensemble_state['pad_token_id'] is not None
+            ), "generated beams >= num_beams -> eos_token_id and pad_token have to be defined"
+            next_batch_beam.extend([(0, ensemble_state['pad_token_id'], 0)] * ensemble_state['num_beams'])  # pad the batch
+            continue
+
+        # next sentence beam content
+        next_sent_beam = []
+
+        # next tokens for this sentence from each beam
+        for beam_token_rank, (beam_token_id, beam_token_score) in enumerate(
+                zip(next_tokens[batch_idx], next_scores[batch_idx])
+        ):
+            # get beam and token IDs
+            beam_id = beam_token_id // ensemble_state['vocab_size']
+            token_id = beam_token_id % ensemble_state['vocab_size']
+
+            effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
+            # add to generated hypotheses if end of sentence or last iteration
+            if (ensemble_state['eos_token_id'] is not None) and (token_id.item() == ensemble_state['eos_token_id']):
+                # if beam_token does not belong to top num_beams tokens, it should not be added
+                is_beam_token_worse_than_top_num_beams = beam_token_rank >= ensemble_state['num_beams']
+                if is_beam_token_worse_than_top_num_beams:
+                    continue
+                # update beam hypotheses obj with finished hypothesis and score
+                ensemble_state['generated_hyps'][batch_idx].add(
+                    ensemble_state['input_ids'][effective_beam_id].clone(), beam_token_score.item(),
+                )
+            else:
+                # add next predicted token if it is not eos_token
+                next_sent_beam.append((beam_token_score, token_id, effective_beam_id))
+
+            # the beam for next step is now full
+            if len(next_sent_beam) == ensemble_state['num_beams']:
+                break
+
+        # Check if we're done so that we can save a pad step if all(done)
+        ensemble_state['done'][batch_idx] = ensemble_state['done'][batch_idx] or ensemble_state['generated_hyps'][batch_idx].is_done(
+            next_scores[batch_idx].max().item(), cur_len=ensemble_state['cur_len']
+        )
+
+        # update next beam content
+        assert len(next_sent_beam) == ensemble_state['num_beams'], "Beam should always be full after loop above"
+        next_batch_beam.extend(next_sent_beam)
+        assert len(next_batch_beam) == ensemble_state['num_beams'] * (batch_idx + 1)
+
+    # stop if are done with every sentence
+    if all(ensemble_state['done']):
+        return component_states, ensemble_state
+
+    # sanity check / prepare next timestep
+    assert len(next_batch_beam) == ensemble_state['batch_size'] * ensemble_state['num_beams']
+
+    # Note we shouldn't need to deal with beam scores on the component_states
+    ensemble_state['beam_scores'] = ensemble_state['beam_scores'].new([x[0] for x in next_batch_beam])
+
+    # re-order batch
+    beam_tokens = ensemble_state['input_ids'].new([x[1] for x in next_batch_beam])
+    beam_idx = ensemble_state['input_ids'].new([x[2] for x in next_batch_beam])
+
+    # TODO: WORKING: set input_ids, cur_len, past on all component states and on ensemble_state
+    for state in component_states:
+        state['input_ids'] = state['input_ids'][beam_idx, :]
+        state['input_ids'] = torch.cat([state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
+
+    ensemble_state['input_ids'] = ensemble_state['input_ids'][beam_idx, :]
+    ensemble_state['input_ids'] = torch.cat([ensemble_state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
+
+    # re-order internal states
+    # Note ensemble_state has no "past", this is only on component_states
+    # TODO: Note in case batch size is 1 (beam can be larger), all 'past' should be identical, so this reordering shouldn't matter
+    # TODO: confirm this as it could lead to very weird bugs
+    for state in component_states:
+        state['past'] = state['model']._reorder_cache(state['past'], beam_idx)
+
+    # extend attention_mask for new generated input if only decoder
+    # Chris: commented until we need a decoder-only model
+    #if state['model'].config.is_encoder_decoder is False:
+    #    state['attention_mask'] = torch.cat(
+    #        [
+    #            state['attention_mask'],
+    #            state['attention_mask'].new_ones((state['attention_mask'].shape[0], 1))
+    #        ],
+    #        dim=-1
+    #    )
+
+    # update current length
+    for state in component_states:
+        state['cur_len'] = state['cur_len'] + 1
+
+    ensemble_state['cur_len'] = ensemble_state['cur_len'] + 1
+
+    return component_states, ensemble_state
+
+
+def beam_search_step(state):
+    if state.get('outputs', None) is None:
+        outputs = outputs_from_state(state)
+
+    print(f'shape of outputs[0]: {outputs[0].shape}')
+    next_token_logits = outputs[0][:, -1, :]  # (batch_size * num_beams, vocab_size)
+
+    # if model has past, then set the past variable to speed up decoding
+    if state['model']._do_output_past(outputs):
+        state['past'] = outputs[1]
+
+    import ipdb; ipdb.set_trace()
+
+    # TODO: Chris working: some heuristics are applied in-place to logits, others to scores
+    # repetition penalty (from CTRL paper https://arxiv.org/abs/1909.05858)
+    if state['repetition_penalty'] != 1.0:
+        state['model'].enforce_repetition_penalty_(
+            next_token_logits,
+            state['batch_size'],
+            state['num_beams'],
+            state['input_ids'],
+            state['repetition_penalty']
+        )
+
+    if state['temperature'] != 1.0:
+        next_token_logits = next_token_logits / state['temperature']
+
+    scores = F.log_softmax(next_token_logits, dim=-1)  # (batch_size * num_beams, vocab_size)
+    if state['model'].config.is_encoder_decoder and state['do_sample'] is False:
+        # TODO (PVP) still a bit hacky here - there might be a better solution
+        scores = state['model'].prepare_scores_for_generation(
+            scores,
+            cur_len=state['cur_len'],
+            max_length=state['max_length'])
+
+    # set eos token prob to zero if min_length is not reached
+    if state['eos_token_id'] is not None and state['cur_len'] < state['min_length']:
+        scores[:, state['eos_token_id']] = -float("inf")
+
+    if state['no_repeat_ngram_size'] > 0:
+        # calculate a list of banned tokens to prevent repetitively generating the same ngrams
+        num_batch_hypotheses = state['batch_size'] * state['num_beams']
+        # from fairseq: https://github.com/pytorch/fairseq/blob/a07cb6f40480928c9e0548b737aadd36ee66ac76/fairseq/sequence_generator.py#L345
+        banned_batch_tokens = modeling_utils.calc_banned_ngram_tokens(
+            state['input_ids'],
+            num_batch_hypotheses,
+            state['no_repeat_ngram_size'],
+            state['cur_len']
+        )
+        for i, banned_tokens in enumerate(banned_batch_tokens):
+            scores[i, banned_tokens] = -float("inf")
+
+    if state['bad_words_ids'] is not None:
+        # calculate a list of banned tokens according to bad words
+        banned_tokens = modeling_utils.calc_banned_bad_words_ids(
+            state['input_ids'],
+            state['bad_words_ids']
+        )
+
+        for i, banned_tokens in enumerate(banned_tokens):
+            scores[i, banned_tokens] = -float("inf")
+
+    assert scores.shape == (
+        state['batch_size'] * state['num_beams'], state['vocab_size']), "Shapes of scores: {} != {}".format(
+        scores.shape, (state['batch_size'] * state['num_beams'], state['vocab_size'])
+    )
+
+    # Chris: ok, now we have the scores from this (model, text) pair, let's return them and ensemble before
+    #  continuing.
+    # Chris: let's create a wrapper that holds pairs of model, text
+    # Chris: let's create a new type of hypothesis which stores additional metadata in the beam
+    # Chris: same structure as beam, but stores arbitrary meta-data in each cell -- WORKING: what is the "timestamp metatdata?"
+
+    # BEGIN: ways of selecting next token from scores
+    if state['do_sample']:
+        _scores = scores + state['beam_scores'][:, None].expand_as(scores)  # (batch_size * num_beams, vocab_size)
+        # Top-p/top-k filtering
+        # Chris: note hard-coded `min_tokens_to_keep`
+        _scores = modeling_utils.top_k_top_p_filtering(
+            _scores, top_k=state['top_k'], top_p=state['top_p'], min_tokens_to_keep=2
+        )  # (batch_size * num_beams, vocab_size)
+        # re-organize to group the beam together to sample from all beam_idxs
+        _scores = _scores.contiguous().view(
+            state['batch_size'], state['num_beams'] * state['vocab_size']
+        )  # (batch_size, num_beams * vocab_size)
+
+        # Sample 2 next tokens for each beam (so we have some spare tokens and match output of greedy beam search)
+        probs = F.softmax(_scores, dim=-1)
+        next_tokens = torch.multinomial(probs, num_samples=2 * state['num_beams'])  # (batch_size, num_beams * 2)
+        # Compute next scores
+        next_scores = torch.gather(_scores, -1, next_tokens)  # (batch_size, num_beams * 2)
+        # sort the sampled vector to make sure that the first num_beams samples are the best
+        next_scores, next_scores_indices = torch.sort(next_scores, descending=True, dim=1)
+        next_tokens = torch.gather(next_tokens, -1, next_scores_indices)  # (batch_size, num_beams * 2)
+
+    else:
+        next_scores = scores + state['beam_scores'][:, None].expand_as(scores)  # (batch_size * num_beams, vocab_size)
+
+        # re-organize to group the beam together (we are keeping top hypotheses across beams)
+        next_scores = next_scores.view(
+            state['batch_size'], state['num_beams'] * state['vocab_size']
+        )  # (batch_size, num_beams * vocab_size)
+
+        next_scores, next_tokens = \
+            torch.topk(
+                next_scores,
+                2 * state['num_beams'],
+                dim=1,
+                largest=True,
+                sorted=True
+            )
+
+    assert next_scores.size() == next_tokens.size() == (state['batch_size'], 2 * state['num_beams'])
+    # NEXT TOKEN CANDIDATES HAVE BEEN SELECTED
+
+    # BEGIN: UPDATING SEARCH STATE
+    # next batch beam content
+    next_batch_beam = []
+
+    # for each sentence
+    for batch_idx in range(state['batch_size']):
+
+        # if we are done with this sentence
+        if state['done'][batch_idx]:
+            assert (
+                    len(state['generated_hyps'][batch_idx]) >= state['num_beams']
+            ), "Batch can only be done if at least {} beams have been generated".format(state['num_beams'])
+            assert (
+                    state['eos_token_id'] is not None and state['pad_token_id'] is not None
+            ), "generated beams >= num_beams -> eos_token_id and pad_token have to be defined"
+            next_batch_beam.extend([(0, state['pad_token_id'], 0)] * state['num_beams'])  # pad the batch
+            continue
+
+        # next sentence beam content
+        next_sent_beam = []
+
+        # next tokens for this sentence from each beam
+        for beam_token_rank, (beam_token_id, beam_token_score) in enumerate(
+                zip(next_tokens[batch_idx], next_scores[batch_idx])
+        ):
+            # get beam and token IDs
+            beam_id = beam_token_id // state['vocab_size']
+            token_id = beam_token_id % state['vocab_size']
+
+            effective_beam_id = batch_idx * state['num_beams'] + beam_id
+            # add to generated hypotheses if end of sentence or last iteration
+            if (state['eos_token_id'] is not None) and (token_id.item() == state['eos_token_id']):
+                # if beam_token does not belong to top num_beams tokens, it should not be added
+                is_beam_token_worse_than_top_num_beams = beam_token_rank >= state['num_beams']
+                if is_beam_token_worse_than_top_num_beams:
+                    continue
+                # update beam hypotheses obj with finished hypothesis and score
+                state['generated_hyps'][batch_idx].add(
+                    state['input_ids'][effective_beam_id].clone(), beam_token_score.item(),
+                )
+            else:
+                # add next predicted token if it is not eos_token
+                next_sent_beam.append((beam_token_score, token_id, effective_beam_id))
+
+            # the beam for next step is now full
+            if len(next_sent_beam) == state['num_beams']:
+                break
+
+        # Check if we're done so that we can save a pad step if all(done)
+        state['done'][batch_idx] = state['done'][batch_idx] or state['generated_hyps'][batch_idx].is_done(
+            next_scores[batch_idx].max().item(), cur_len=state['cur_len']
+        )
+
+        # update next beam content
+        assert len(next_sent_beam) == state['num_beams'], "Beam should always be full after loop above"
+        next_batch_beam.extend(next_sent_beam)
+        assert len(next_batch_beam) == state['num_beams'] * (batch_idx + 1)
+
+    # stop if are done with every sentence
+    if all(state['done']):
+        return state
+
+    # sanity check / prepare next timestep
+    assert len(next_batch_beam) == state['batch_size'] * state['num_beams']
+    state['beam_scores'] = state['beam_scores'].new([x[0] for x in next_batch_beam])
+
+    # re-order batch
+    beam_tokens = state['input_ids'].new([x[1] for x in next_batch_beam])
+    beam_idx = state['input_ids'].new([x[2] for x in next_batch_beam])
+
+    state['input_ids'] = state['input_ids'][beam_idx, :]
+    state['input_ids'] = torch.cat([state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
+    # re-order internal states
+    if state['past'] is not None:
+        state['past'] = state['model']._reorder_cache(state['past'], beam_idx)
+
+    # extend attention_mask for new generated input if only decoder
+    if state['model'].config.is_encoder_decoder is False:
+        state['attention_mask'] = torch.cat(
+            [
+                state['attention_mask'],
+                state['attention_mask'].new_ones((state['attention_mask'].shape[0], 1))
+            ],
+            dim=-1
+        )
+
+    # update current length
+    state['cur_len'] = state['cur_len'] + 1
+    return state
 
 
 # this is def step() for model._generate_no_beam_search
@@ -366,205 +839,5 @@ def greedy_step(state):
 
     return state
 
-
-def beam_search_step(state):
-    model_inputs = state['model'].prepare_inputs_for_generation(
-        state['input_ids'],
-        past=state['past'],
-        attention_mask=state['attention_mask'])
-    outputs = state['model'](**model_inputs)  # (batch_size * num_beams, cur_len, vocab_size)
-    next_token_logits = outputs[0][:, -1, :]  # (batch_size * num_beams, vocab_size)
-
-    # if model has past, then set the past variable to speed up decoding
-    if state['model']._do_output_past(outputs):
-        state['past'] = outputs[1]
-
-    # repetition penalty (from CTRL paper https://arxiv.org/abs/1909.05858)
-    if state['repetition_penalty'] != 1.0:
-        state['model'].enforce_repetition_penalty_(
-            next_token_logits,
-            state['batch_size'],
-            state['num_beams'],
-            state['input_ids'],
-            state['repetition_penalty']
-        )
-
-    if state['temperature'] != 1.0:
-        next_token_logits = next_token_logits / state['temperature']
-
-    scores = F.log_softmax(next_token_logits, dim=-1)  # (batch_size * num_beams, vocab_size)
-    if state['model'].config.is_encoder_decoder and state['do_sample'] is False:
-        # TODO (PVP) still a bit hacky here - there might be a better solutino
-        scores = state['model'].prepare_scores_for_generation(
-            scores,
-            cur_len=state['cur_len'],
-            max_length=state['max_length'])
-
-    # set eos token prob to zero if min_length is not reached
-    if state['eos_token_id'] is not None and state['cur_len'] < state['min_length']:
-        scores[:, state['eos_token_id']] = -float("inf")
-
-    if state['no_repeat_ngram_size'] > 0:
-        # calculate a list of banned tokens to prevent repetitively generating the same ngrams
-        num_batch_hypotheses = state['batch_size'] * state['num_beams']
-        # from fairseq: https://github.com/pytorch/fairseq/blob/a07cb6f40480928c9e0548b737aadd36ee66ac76/fairseq/sequence_generator.py#L345
-        banned_batch_tokens = modeling_utils.calc_banned_ngram_tokens(
-            state['input_ids'],
-            num_batch_hypotheses,
-            state['no_repeat_ngram_size'],
-            state['cur_len']
-        )
-        for i, banned_tokens in enumerate(banned_batch_tokens):
-            scores[i, banned_tokens] = -float("inf")
-
-    if state['bad_words_ids'] is not None:
-        # calculate a list of banned tokens according to bad words
-        banned_tokens = modeling_utils.calc_banned_bad_words_ids(
-            state['input_ids'],
-            state['bad_words_ids']
-        )
-
-        for i, banned_tokens in enumerate(banned_tokens):
-            scores[i, banned_tokens] = -float("inf")
-
-    assert scores.shape == (
-        state['batch_size'] * state['num_beams'], state['vocab_size']), "Shapes of scores: {} != {}".format(
-        scores.shape, (state['batch_size'] * state['num_beams'], state['vocab_size'])
-    )
-
-    # Chris: ok, now we have the scores from this (model, text) pair, let's return them and ensemble before
-    #  continuing.
-    # Chris: let's create a wrapper that holds pairs of model, text
-    # Chris: let's create a new type of hypothesis which stores additional metadata in the beam
-    # Chris: same structure as beam, but stores arbitrary meta-data in each cell -- what is the "timestamp metatdata?"
-
-    if state['do_sample']:
-        _scores = scores + state['beam_scores'][:, None].expand_as(scores)  # (batch_size * num_beams, vocab_size)
-        # Top-p/top-k filtering
-        # Chris: note hard-coded `min_tokens_to_keep`
-        _scores = modeling_utils.top_k_top_p_filtering(
-            _scores, top_k=state['top_k'], top_p=state['top_p'], min_tokens_to_keep=2
-        )  # (batch_size * num_beams, vocab_size)
-        # re-organize to group the beam together to sample from all beam_idxs
-        _scores = _scores.contiguous().view(
-            state['batch_size'], state['num_beams'] * state['vocab_size']
-        )  # (batch_size, num_beams * vocab_size)
-
-        # Sample 2 next tokens for each beam (so we have some spare tokens and match output of greedy beam search)
-        probs = F.softmax(_scores, dim=-1)
-        next_tokens = torch.multinomial(probs, num_samples=2 * state['num_beams'])  # (batch_size, num_beams * 2)
-        # Compute next scores
-        next_scores = torch.gather(_scores, -1, next_tokens)  # (batch_size, num_beams * 2)
-        # sort the sampled vector to make sure that the first num_beams samples are the best
-        next_scores, next_scores_indices = torch.sort(next_scores, descending=True, dim=1)
-        next_tokens = torch.gather(next_tokens, -1, next_scores_indices)  # (batch_size, num_beams * 2)
-
-    else:
-        next_scores = scores + state['beam_scores'][:, None].expand_as(scores)  # (batch_size * num_beams, vocab_size)
-
-        # re-organize to group the beam together (we are keeping top hypotheses across beams)
-        next_scores = next_scores.view(
-            state['batch_size'], state['num_beams'] * state['vocab_size']
-        )  # (batch_size, num_beams * vocab_size)
-
-        next_scores, next_tokens = \
-            torch.topk(
-                next_scores,
-                2 * state['num_beams'],
-                dim=1,
-                largest=True,
-                sorted=True
-            )
-
-    assert next_scores.size() == next_tokens.size() == (state['batch_size'], 2 * state['num_beams'])
-
-    # next batch beam content
-    next_batch_beam = []
-
-    # for each sentence
-    for batch_idx in range(state['batch_size']):
-
-        # if we are done with this sentence
-        if state['done'][batch_idx]:
-            assert (
-                    len(state['generated_hyps'][batch_idx]) >= state['num_beams']
-            ), "Batch can only be done if at least {} beams have been generated".format(state['num_beams'])
-            assert (
-                    state['eos_token_id'] is not None and state['pad_token_id'] is not None
-            ), "generated beams >= num_beams -> eos_token_id and pad_token have to be defined"
-            next_batch_beam.extend([(0, state['pad_token_id'], 0)] * state['num_beams'])  # pad the batch
-            continue
-
-        # next sentence beam content
-        next_sent_beam = []
-
-        # next tokens for this sentence from each beam
-        for beam_token_rank, (beam_token_id, beam_token_score) in enumerate(
-                zip(next_tokens[batch_idx], next_scores[batch_idx])
-        ):
-            # get beam and token IDs
-            beam_id = beam_token_id // state['vocab_size']
-            token_id = beam_token_id % state['vocab_size']
-
-            effective_beam_id = batch_idx * state['num_beams'] + beam_id
-            # add to generated hypotheses if end of sentence or last iteration
-            if (state['eos_token_id'] is not None) and (token_id.item() == state['eos_token_id']):
-                # if beam_token does not belong to top num_beams tokens, it should not be added
-                is_beam_token_worse_than_top_num_beams = beam_token_rank >= state['num_beams']
-                if is_beam_token_worse_than_top_num_beams:
-                    continue
-                # update beam hypotheses obj with finished hypothesis and score
-                state['generated_hyps'][batch_idx].add(
-                    state['input_ids'][effective_beam_id].clone(), beam_token_score.item(),
-                )
-            else:
-                # add next predicted token if it is not eos_token
-                next_sent_beam.append((beam_token_score, token_id, effective_beam_id))
-
-            # the beam for next step is now full
-            if len(next_sent_beam) == state['num_beams']:
-                break
-
-        # Check if we're done so that we can save a pad step if all(done)
-        state['done'][batch_idx] = state['done'][batch_idx] or state['generated_hyps'][batch_idx].is_done(
-            next_scores[batch_idx].max().item(), cur_len=state['cur_len']
-        )
-
-        # update next beam content
-        assert len(next_sent_beam) == state['num_beams'], "Beam should always be full after loop above"
-        next_batch_beam.extend(next_sent_beam)
-        assert len(next_batch_beam) == state['num_beams'] * (batch_idx + 1)
-
-    # stop if are done with every sentence
-    if all(state['done']):
-        return state
-
-    # sanity check / prepare next timestep
-    assert len(next_batch_beam) == state['batch_size'] * state['num_beams']
-    state['beam_scores'] = state['beam_scores'].new([x[0] for x in next_batch_beam])
-
-    # re-order batch
-    beam_tokens = state['input_ids'].new([x[1] for x in next_batch_beam])
-    beam_idx = state['input_ids'].new([x[2] for x in next_batch_beam])
-
-    state['input_ids'] = state['input_ids'][beam_idx, :]
-    state['input_ids'] = torch.cat([state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
-    # re-order internal states
-    if state['past'] is not None:
-        state['past'] = state['model']._reorder_cache(state['past'], beam_idx)
-
-    # extend attention_mask for new generated input if only decoder
-    if state['model'].config.is_encoder_decoder is False:
-        state['attention_mask'] = torch.cat(
-            [
-                state['attention_mask'],
-                state['attention_mask'].new_ones((state['attention_mask'].shape[0], 1))
-            ],
-            dim=-1
-        )
-
-    # update current length
-    state['cur_len'] = state['cur_len'] + 1
-    return state
 
 
