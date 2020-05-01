@@ -5,10 +5,29 @@ from torch.nn import functional as F
 
 from transformers import modeling_utils
 
-from transformer_decoding import log
+from transformer_decoding import decoding_utils, log
 
 
 logger = log.create_logger(__name__)
+
+
+def generate(component_states, timesteps, ensemble_state=None):
+    """
+    Run generation for a number of timesteps
+    """
+    if type(component_states) is not list:
+        component_states = [component_states]
+
+    if ensemble_state is None:
+        assert len(component_states) == 1
+        for step_idx in range(timesteps):
+            component_states[0] = decoding_utils.beam_search_step(component_states[0])
+    else:
+        for step_idx in range(timesteps):
+            component_states, ensemble_state = \
+                decoding_utils.ensembled_beam_search_step(component_states, ensemble_state)
+
+    return component_states, ensemble_state
 
 
 def initialize_generation(
@@ -277,7 +296,7 @@ def outputs_from_state(state):
     return outputs
 
 
-# working: think through ensembled_beam_search_step
+@torch.no_grad()
 def ensembled_beam_search_step(component_states, ensemble_state):
     """
     Decoding hyperparams live in ensemble_state
@@ -523,7 +542,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
 
     return component_states, ensemble_state
 
-
+@torch.no_grad()
 def beam_search_step(state):
     if state.get('outputs', None) is None:
         outputs = outputs_from_state(state)
@@ -731,6 +750,7 @@ def beam_search_step(state):
 
 
 # this is def step() for model._generate_no_beam_search
+@torch.no_grad()
 def greedy_step(state):
     model_inputs = state['model'].prepare_inputs_for_generation(
         state['input_ids'],

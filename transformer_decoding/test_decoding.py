@@ -15,7 +15,6 @@ from collections import OrderedDict
 
 import torch
 
-import transformers
 from transformers import (modeling_utils,
                           BartTokenizer,
                           BartForConditionalGeneration,
@@ -41,7 +40,7 @@ def get_start_state(text, model, tokenizer, decoding_hyperparams):
         decoding_hyperparams=decoding_hyperparams
     )
 
-    # TODO: move out of test one interfaces are clear
+    # TODO: move out of test once interfaces are clear
     #  still don't know whether to use BeamHypotheses or not
     #  generated hypotheses -- this may move to
     #  `get_initial_decoding_state`
@@ -120,34 +119,23 @@ class TestTransformerDecoding(unittest.TestCase):
          a discrete representation of this timestep and proceeding to the next one.
         """
         # then we wish to step through decoding
-        # TODO: note beam logic needs to be outside of step function
-
-        # WORKING: next step -- split scoring and beam consolidation into separate functions
-
         # for summarization, args on initial state which are input-specific:
         # decoder_state['model']
         # decoder_state['encoder_outputs']
-
         # decoder_state['past'] will also hold something model-specific(?)
         # Every other arg is a decoding hyperparam
 
         # as decoding proceeds, input_ids will hold current state
-        # TODO: IDEA: pass a list of states, and one additional state to hold their combined outputs
-        # TODO: IDEA: new function `def get_ensemble_wrapper_decoding_state`
+        # IDEA: pass a list of states, and one additional state to hold their combined outputs
+        test_articles_1 = [self.test_news_article_1, self.test_news_article_2]
+        component_states_1 = [get_start_state(a, self.model, self.tokenizer, self.decoding_hyperparams)
+                            for a in test_articles_1]
+        ensemble_state_1 = get_start_state(test_articles_1[0], self.model, self.tokenizer, self.decoding_hyperparams)
 
-        decoder_state_1 = get_start_state(
-            self.test_news_article_2,
-            self.model,
-            self.tokenizer,
-            self.decoding_hyperparams)
-
-        decoder_state_2 = get_start_state(
-            self.test_news_article_2,
-            self.model,
-            self.tokenizer,
-            self.decoding_hyperparams)
-
-        #first_step_outputs = decoding_utils.outputs_from_state(decoder_state)
+        # TODO: at the beginning of decoding, the ensemble state doesn't know anything about the component states
+        #  - we should try to encode this explicitly by _not_ passing an input to initialize this state
+        # TODO: remove past and encoder outputs from ensemble state
+        # TODO: remove decoding hyperparams from component_states for sanity
 
         # run beam_search_step function
         # ok now we are ready to start stepping
@@ -160,31 +148,25 @@ class TestTransformerDecoding(unittest.TestCase):
         #    print()
         #    import ipdb; ipdb.set_trace()
 
-        component_states = [decoder_state_1, decoder_state_2]
-
         # TODO: assert that it doesn't matter which state we initialize ensemble_state from
-        # RuntimeError: Only Tensors created explicitly by the user (graph leaves) support the deepcopy protocol at the moment
-        ensemble_state = OrderedDict()
-        for k, v in decoder_state_1.items():
-            try:
-                ensemble_state[k] = copy.deepcopy(v)
-            except:
-                print(f'Can\'t copy state item: {k}, type: {type(v)}')
-                if len(v):
-                    print(f'types of items in v: {[type(c) for c in v]}')
+        component_states_1, ensemble_state_1 = \
+            decoding_utils.generate(component_states_1, self.decoding_hyperparams['max_length'],
+                                    ensemble_state=ensemble_state_1)
 
-        for step_idx in range(self.decoding_hyperparams['max_length']):
-            print(f'STEP: {step_idx}')
-            print([self.tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in
-                   ensemble_state['input_ids']])
-            component_states, ensemble_state = \
-                decoding_utils.ensembled_beam_search_step(component_states, ensemble_state)
-            print()
-            if step_idx % 10 == 0:
-                import ipdb; ipdb.set_trace()
+        # reorder articles and run again
+        test_articles_2 = [self.test_news_article_2, self.test_news_article_1]
+        component_states_2 = [get_start_state(a, self.model, self.tokenizer, self.decoding_hyperparams)
+                              for a in test_articles_2]
+        ensemble_state_2 = get_start_state(test_articles_2[0], self.model, self.tokenizer, self.decoding_hyperparams)
 
-        # TODO: assert that single-member ensemble and two-member identical ensemble give
-        #  same results as non-ensembled beam search
+        component_states_2, ensemble_state_2 = \
+            decoding_utils.generate(component_states_2, self.decoding_hyperparams['max_length'],
+                                    ensemble_state=ensemble_state_2)
+
+        for o1_ids, o2_ids in zip(ensemble_state_1['input_ids'], ensemble_state_2['input_ids']):
+            o1_text = self.tokenizer.decode(o1_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            o2_text = self.tokenizer.decode(o2_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            assert o1_text == o2_text
 
 
 if __name__ == '__main__':
