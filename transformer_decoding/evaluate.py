@@ -2,15 +2,32 @@ import argparse
 import json
 from pathlib import Path
 import tqdm
+from _collections import defaultdict
+
+import numpy as np
 
 from transformers import (modeling_utils,
                           BartTokenizer,
                           BartForConditionalGeneration,
                           BartConfig)
 
+from transformer_decoding import decoding_utils
 import transformer_decoding.log as log
 
+from newsroom.analyze.rouge import ROUGE_L, ROUGE_N
+
 logger = log.create_logger(__name__)
+
+
+def print_mean(results, rouge_types):
+    for rouge_type in rouge_types:
+        precs = results[rouge_type]['p']
+        recalls = results[rouge_type]['r']
+        fscores = results[rouge_type]['f']
+        p = round(np.mean(precs), 3)
+        r = round(np.mean(recalls), 3)
+        f = round(np.mean(fscores), 3)
+        print(rouge_type, 'p:', p, 'r:', r, 'f:', f)
 
 
 class BartSummarizerConfig:
@@ -18,82 +35,126 @@ class BartSummarizerConfig:
         """
         currently we use the model `bart-large-cnn`
         """
-        self.model = BartForConditionalGeneration.from_pretrained('model_name')
-        self.tokenizer = BartTokenizer.from_pretrained(args['model_name'])
+        self.model = BartForConditionalGeneration.from_pretrained('model_id')
+        self.tokenizer = BartTokenizer.from_pretrained(args['model_id'])
 
 
-# TODO: WORKING: in general we want to be able to ensemble both models _and_
-#  inputs  -- we should support arbitrary combinations of these, without too much
-#  cruft from configuration
-def summarize(args):
+class Summarizer:
+
+    def __init__(self, config):
+        self.model = config['model']
+        self.tokenizer = config['tokenizer']
+
+    # TODO: factor out score computation vs reduction(?) -- wait for usecase
+
+
+#  we want to be able to ensemble
+#  (1) different inputs, same model
+#  (2) same inputs, different models
+#  -- we should support arbitrary combinations of these, without too much
+#   cruft from configuration
+def summarize_articles(articles, args):
+    """
+    Ensembled summarization of a cluster of articles
+    """
     model = args['model']
     tokenizer = args['tokenizer']
     decoding_hyperparams = {
         'max_length': args['max_length'],
         'num_beams': args['num_beams']
     }
-    dataset = [json.loads(l) for l in open(args['evaluation_dataset'])]
+
+    component_states = [decoding_utils.get_start_state(a, model, tokenizer, decoding_hyperparams)
+                        for a in articles]
+    ensemble_state = decoding_utils.get_start_state(articles[0], model, tokenizer, decoding_hyperparams)
+
+    component_states, ensemble_state = \
+        decoding_utils.generate(component_states, decoding_hyperparams['max_length'],
+                                ensemble_state=ensemble_state)
+
+    # assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
+    predictions = [tokenizer.decode(input_ids,
+                                    skip_special_tokens=True,
+                                    clean_up_tokenization_spaces=False)
+                   for input_ids in ensemble_state['input_ids']]
+
+    # TODO: currently `summaries` contains `beam_size` predictions, not sorted by score
+    return predictions
+
+
+def article_to_text(article):
+    return f'{article["title"]} {article["text"]}'
+
+
+def main(args):
+
+    # TODO: all args in CLI
+    hardcoded_args = {
+        'model_id': 'bart-large-cnn',
+        'max_length': 40,
+        'num_beams': 3,
+        'max_articles_in_cluster': 3,
+    }
+    args = dict(hardcoded_args, **args)
+
+    # load pretrained or finetuned transformer model
+    args['model'] = BartForConditionalGeneration.from_pretrained(args['model_id'])
+    args['tokenizer'] = BartTokenizer.from_pretrained(args['model_id'])
+
+    # summarize MDS / summarization dataset with model
+
+    # print and write out evaluation results
+    # TODO: WORKING: in general we want to be able to ensemble both models _and_
+    dataset = [json.loads(l) for l in open(args['evaluation_dataset'])][:args['rows_to_eval']]
 
     summaries = []
     # get summary for each cluster
     # note here we have a macro-batch size of one cluster by definition
     for cluster in tqdm.tqdm(dataset):
-        articles = [article_to_text(a) for a in cluster['articles'][:args['max_articles']]]
+        articles = [article_to_text(a) for a in cluster['articles'][:args['max_articles_in_cluster']]]
 
-        component_states = [get_start_state(a, model, tokenizer, decoding_hyperparams)
-                            for a in articles]
-        ensemble_state = get_start_state(articles[0], model, tokenizer, decoding_hyperparams)
+        predictions = summarize_articles(articles, args)
+        #print(f'Predictions: \n{predictions}')
+        #print()
+        #print(f'input_ids shape: {ensemble_state["input_ids"].shape}')
+        #print(f'Reference Summary:\n{cluster["summary"]}')
 
-        component_states, ensemble_state = \
-            decoding_utils.generate(component_states, decoding_hyperparams['max_length'],
-                                    ensemble_state=ensemble_state)
-
-        # assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
-        print(f'input_ids shape: {ensemble_state["input_ids"].shape}')
-        print(f'Reference Summary:\n{cluster["summary"]}')
-        predictions = [tokenizer.decode(input_ids,
-                                        skip_special_tokens=True,
-                                        clean_up_tokenization_spaces=False)
-                       for input_ids in ensemble_state['input_ids']]
-        print(f'Predictions: \n{predictions}')
-        print()
-
-        # NOTE: hack to just take the first one right now
+        # NOTE: hack to just take the first one right now, disregarding scores of different beam items
         summaries.append((predictions[0], cluster['summary']))
-    return summaries
 
+    # WORKING: get summary, append (or eval online)
+    # Now evaluate
+    rouge_types = ['rouge-1', 'rouge-2', 'rouge-l']
+    results = dict((rouge_type, defaultdict(list))
+                   for rouge_type in rouge_types)
 
-class Summarizer:
+    lowercase = True
 
-    def __init__(self, config):
-        model = config['model']
-        tokenizer = config['tokenizer']
+    for hyp, ref in summaries:
+        if lowercase:
+            hyp = hyp.lower()
+            ref = ref.lower()
 
-    # TODO: factor out score computation vs reduction
+        r1 = ROUGE_N(ref, hyp, n=1)
+        r2 = ROUGE_N(ref, hyp, n=2)
+        rl = ROUGE_L(ref, hyp)
 
+        for (rouge_type, scores) in zip(rouge_types, [r1, r2, rl]):
+            results[rouge_type]['p'].append(scores.precision)
+            results[rouge_type]['r'].append(scores.recall)
+            results[rouge_type]['f'].append(scores.fscore)
 
-
-
-def main(args):
-
-    # load pretrained or finetuned transformer model
-
-    # summarize MDS / summarization dataset with model
-
-    # print and write out evaluation results
-
-
-    pass
+    print_mean(results, rouge_types)
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--resource-path',
-        type=str,
-        required=True,
-        help='path to resources'
-    )
+    #parser.add_argument(
+    #    '--resource-path',
+    #    type=str,
+    #    required=True,
+    #    help='path to resources'
+    #)
     parser.add_argument(
         '--evaluation-dataset',
         type=str,
@@ -101,41 +162,17 @@ def parse_args():
         help='filepath of evaluation data'
     )
     parser.add_argument(
-        '--spotter',
+        '--model-id',
         type=str,
+        required=True,
+        help='(currently) the model id string from the huggingface transformers library'
+    )
+    parser.add_argument(
+        '--rows-to-eval',
+        type=int,
+        required=False,
         default=None,
-        required=False,
-        help='name of the spotter to use in the linking pipeline'
-    )
-    parser.add_argument(
-        '--linker',
-        type=str,
-        default='FastTextEntityLinker',
-        required=False,
-        help='name of the linker class to use'
-    )
-    parser.add_argument(
-        '--strict-boundary',
-        dest='strict_boundary',
-        action='store_true',
-        help='If used, entities match only if both start and end are '
-             'the same'
-    )
-    parser.add_argument(
-        '--wp-to-wd-file',
-        type=str,
-        default=None,
-        required=False,
-        help='locatiion of the map from wikiname to wikdata id for '
-             'ConceptsEndpointLinker'
-    )
-    parser.add_argument(
-        '--concepts-endpoint-url',
-        type=str,
-        default=None,
-        required=False,
-        help='the location where the concepts endpoint is running, used '
-             'by ConceptsEndpointLinker'
+        help='if provided, truncate eval dataset to this many rows'
     )
     return parser.parse_args()
 

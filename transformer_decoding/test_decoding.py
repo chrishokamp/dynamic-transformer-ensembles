@@ -31,49 +31,6 @@ from transformer_decoding import decoding_utils
 #)
 
 
-def get_start_state(text, model, tokenizer, decoding_hyperparams):
-    # set up state
-    decoder_state = decoding_utils.get_initial_decoding_state(
-        text=text,
-        model=model,
-        tokenizer=tokenizer,
-        decoding_hyperparams=decoding_hyperparams
-    )
-
-    # TODO: move out of test once interfaces are clear
-    #  still don't know whether to use BeamHypotheses or not
-    #  generated hypotheses -- this may move to
-    #  `get_initial_decoding_state`
-    decoder_state['generated_hyps'] = [
-        modeling_utils.BeamHypotheses(
-            decoder_state['num_beams'],
-            decoder_state['max_length'],
-            decoder_state['length_penalty'],
-            early_stopping=decoder_state['early_stopping'])
-        for _ in range(decoder_state['batch_size'])
-    ]
-
-    # scores for each sentence in the beam
-    decoder_state['beam_scores'] = \
-        torch.zeros((decoder_state['batch_size'], decoder_state['num_beams']),
-                    dtype=torch.float,
-                    device=decoder_state['input_ids'].device)
-
-    # for greedy decoding it is made sure that only tokens of the first beam are considered
-    #  to avoid sampling the exact same tokens three times
-    if decoder_state['do_sample'] is False:
-        decoder_state['beam_scores'][:, 1:] = -1e9
-    decoder_state['beam_scores'] = decoder_state['beam_scores'].view(-1)  # shape (batch_size * num_beams,)
-
-    # cache compute states
-    decoder_state['past'] = decoder_state[
-        'encoder_outputs']  # defined for encoder-decoder models, None for decoder-only models
-
-    # done sentences
-    decoder_state['done'] = [False for _ in range(decoder_state['batch_size'])]
-
-    return decoder_state
-
 
 # Set up transformer model with LM head then assert things
 # TODO: which transformer models have encoder-->decoder
