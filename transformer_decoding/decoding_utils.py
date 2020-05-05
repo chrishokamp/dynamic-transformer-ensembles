@@ -31,6 +31,7 @@ def generate(component_states, timesteps, ensemble_state=None):
 
 
 def get_start_state(text, model, tokenizer, decoding_hyperparams):
+
     # set up state
     decoder_state = decoding_utils.get_initial_decoding_state(
         text=text,
@@ -38,6 +39,10 @@ def get_start_state(text, model, tokenizer, decoding_hyperparams):
         tokenizer=tokenizer,
         decoding_hyperparams=decoding_hyperparams
     )
+    # TODO: move to `decoding_utils.get_initial_decoding_state(?)
+    if torch.cuda.is_available():
+        decoder_state['input_ids'] = decoder_state['input_ids'].to('cuda')
+
 
     # TODO: clarify interfaces
     #  still don't know whether to use BeamHypotheses or not
@@ -171,6 +176,8 @@ def initialize_generation(
         )
     else:
         assert input_ids.dim() == 2, "Input prompt should be of shape (batch_size, sequence length)."
+        # Chris: added this line to fix error when running on GPU
+        input_ids = input_ids.to(next(model.parameters()).device)
 
     # not allow to duplicate outputs when greedy decoding
     if do_sample is False:
@@ -487,8 +494,6 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             ensemble_state['batch_size'], ensemble_state['num_beams'] * ensemble_state['vocab_size']
         )  # (batch_size, num_beams * vocab_size)
 
-        # import ipdb; ipdb.set_trace()
-
         # Chris: there is a |vocab| * beam_idx offset
         next_scores, next_tokens = \
             torch.topk(
@@ -532,7 +537,6 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             token_id = beam_token_id % ensemble_state['vocab_size']
 
             effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
-            # import ipdb; ipdb.set_trace()
             # add to generated hypotheses if end of sentence or last iteration
             if (ensemble_state['eos_token_id'] is not None) and (token_id.item() == ensemble_state['eos_token_id']):
                 # if beam_token does not belong to top num_beams tokens, it should not be added
@@ -550,8 +554,6 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             # the beam for next step is now full
             if len(next_sent_beam) == ensemble_state['num_beams']:
                 break
-
-        # import ipdb; ipdb.set_trace()
 
         # Check if we're done so that we can save a pad step if all(done)
         ensemble_state['done'][batch_idx] = ensemble_state['done'][batch_idx] or ensemble_state['generated_hyps'][batch_idx].is_done(
@@ -586,8 +588,6 @@ def ensembled_beam_search_step(component_states, ensemble_state):
 
     ensemble_state['input_ids'] = ensemble_state['input_ids'][beam_idx, :]
     ensemble_state['input_ids'] = torch.cat([ensemble_state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
-
-    # import ipdb; ipdb.set_trace()
 
     # re-order internal states
     # Note ensemble_state has no "past", this is only on component_states
@@ -625,8 +625,6 @@ def beam_search_step(state):
     # if model has past, then set the past variable to speed up decoding
     if state['model']._do_output_past(outputs):
         state['past'] = outputs[1]
-
-    import ipdb; ipdb.set_trace()
 
     # TODO: Chris working: some heuristics are applied in-place to logits, others to scores
     # repetition penalty (from CTRL paper https://arxiv.org/abs/1909.05858)

@@ -5,6 +5,7 @@ import tqdm
 from _collections import defaultdict
 
 import numpy as np
+import torch
 
 from transformers import (modeling_utils,
                           BartTokenizer,
@@ -93,13 +94,20 @@ def main(args):
         'model_id': 'bart-large-cnn',
         'max_length': 40,
         'num_beams': 3,
-        'max_articles_in_cluster': 3,
     }
     args = dict(hardcoded_args, **args)
 
     # load pretrained or finetuned transformer model
     args['model'] = BartForConditionalGeneration.from_pretrained(args['model_id'])
     args['tokenizer'] = BartTokenizer.from_pretrained(args['model_id'])
+
+    # Set the model in evaluation mode to deactivate the DropOut modules
+    # This is IMPORTANT to have reproducible results during evaluation!
+    args['model'].eval()
+
+    if torch.cuda.is_available():
+        args['model'].to('cuda')
+
 
     # summarize MDS / summarization dataset with model
 
@@ -166,6 +174,13 @@ def parse_args():
         type=str,
         required=True,
         help='(currently) the model id string from the huggingface transformers library'
+    )
+    parser.add_argument(
+        '--max-articles-in-cluster',
+        type=int,
+        required=False,
+        default=None,
+        help='take the first K articles in each cluster to use in the ensemble'
     )
     parser.add_argument(
         '--rows-to-eval',
