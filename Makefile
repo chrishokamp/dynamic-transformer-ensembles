@@ -46,6 +46,7 @@ evaluate:
 	python transformer_decoding/evaluate.py \
 		--evaluation-dataset $(EVALUATION_DATASET) \
 		--model-id $(MODEL_ID) \
+		$(RUN_FLAGS)
 
 .PHONY: clean
 clean:
