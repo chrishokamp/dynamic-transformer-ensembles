@@ -262,7 +262,7 @@ def initialize_generation(
 
 
 # TODO: remember critical assumption that all models use the same output space, we need to use this during
-#  ensembling
+#  ensembling -- remember token / segment level ensembling ideas (token probability is mean of constituent subwords)
 # TODO: does model instance hold any state while decoding? I.e. is model's self.* holding any state while we are
 #  inside the decoding loop?
 # TODO: remove decoding length arg
@@ -278,7 +278,6 @@ def get_initial_decoding_state(text, model, tokenizer, decoding_hyperparams):
         max_length=decoding_hyperparams['max_length'],
         return_tensors='pt'
     )
-    # TODO: working here: what exactly are `input_ids`?
     input_ids = inputs['input_ids']
 
     return initialize_generation(
@@ -288,12 +287,43 @@ def get_initial_decoding_state(text, model, tokenizer, decoding_hyperparams):
 
 
 def outputs_from_state(state):
+    """
+    Run forward pass using a state, note this only works for states with a 'model' attribute
+    """
     model_inputs = state['model'].prepare_inputs_for_generation(
         state['input_ids'],
         past=state['past'],
         attention_mask=state['attention_mask'])
     outputs = state['model'](**model_inputs)  # (batch_size * num_beams, cur_len, vocab_size)
     return outputs
+
+
+def logits_from_output(state):
+    """
+    In the context of ensemble decoding, decoding parameters may be applied twice
+     - once on individual states
+     - once on the entire ensemble
+    As currently implemented, some decoding heuristics are applied to the logits,
+     some are applied to the scores (logits after softmax).
+    """
+    pass
+
+
+def apply_heuristics_to_logits(state):
+    # repetition penalty (from CTRL paper https://arxiv.org/abs/1909.05858)
+    if state['repetition_penalty'] != 1.0:
+        state['model'].enforce_repetition_penalty_(
+            state['next_token_logits'],
+            state['batch_size'],
+            state['num_beams'],
+            state['input_ids'],
+            state['repetition_penalty']
+        )
+
+    if state['temperature'] != 1.0:
+        state['next_token_logits'] = state['next_token_logits'] / state['temperature']
+
+    return state
 
 
 @torch.no_grad()
@@ -306,24 +336,10 @@ def ensembled_beam_search_step(component_states, ensemble_state):
         state['outputs'] = outputs_from_state(state)
         state['next_token_logits'] = state['outputs'][0][:, -1, :]  # (batch_size * num_beams, vocab_size)
 
-        # if model has past, then set the past variable to speed up decoding
-        if state['model']._do_output_past(state['outputs']):
-            state['past'] = state['outputs'][1]
-
-        # repetition penalty (from CTRL paper https://arxiv.org/abs/1909.05858)
-        if state['repetition_penalty'] != 1.0:
-            state['model'].enforce_repetition_penalty_(
-                state['next_token_logits'],
-                ensemble_state['batch_size'],
-                ensemble_state['num_beams'],
-                state['input_ids'],
-                ensemble_state['repetition_penalty']
-            )
-
-        if ensemble_state['temperature'] != 1.0:
-            state['next_token_logits'] = state['next_token_logits'] / ensemble_state['temperature']
-
+        state = apply_heuristics_to_logits(state)
+        # apply softmax to logits
         state['scores'] = F.log_softmax(state['next_token_logits'], dim=-1)  # (batch_size * num_beams, vocab_size)
+
         if state['model'].config.is_encoder_decoder and ensemble_state['do_sample'] is False:
             # TODO (PVP) still a bit hacky here - there might be a better solution
             state['scores'] = state['model'].prepare_scores_for_generation(
@@ -363,6 +379,11 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             state['scores'].shape, (ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size'])
         )
 
+        # TODO: put this side-effect somewhere reasonable
+        # if model has past, then set the past variable to speed up decoding
+        if state['model']._do_output_past(state['outputs']):
+            state['past'] = state['outputs'][1]
+
     # CHRIS: WORKING HERE
     # - assume (and enforce) that component state input_ids are always the same as ensemble state's input_ids
     # - note potential complexity in re-ordering due to individual model's different encoder_outputs
@@ -385,10 +406,8 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     #        dim=0
     #    )[None, :]
 
-    # TEMP
     # TODO: just simple mean of logprobs as first try, later more sophisticated weighting
     ensemble_state['scores'] = torch.mean(torch.stack([s['scores'] for s in component_states]), dim=0)
-    # END TEMP
 
     # BEGIN: ways of selecting next token from scores
     if ensemble_state['do_sample']:
@@ -424,6 +443,9 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             ensemble_state['batch_size'], ensemble_state['num_beams'] * ensemble_state['vocab_size']
         )  # (batch_size, num_beams * vocab_size)
 
+        # import ipdb; ipdb.set_trace()
+
+        # Chris: there is a |vocab| * beam_idx offset
         next_scores, next_tokens = \
             torch.topk(
                 next_scores,
@@ -440,7 +462,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     # next batch beam content
     next_batch_beam = []
 
-    # for each sentence
+    # for each sentence (note if we are doing one multi-doc summary, batch_size is 1 for sure)
     for batch_idx in range(ensemble_state['batch_size']):
 
         # if we are done with this sentence
@@ -461,11 +483,12 @@ def ensembled_beam_search_step(component_states, ensemble_state):
         for beam_token_rank, (beam_token_id, beam_token_score) in enumerate(
                 zip(next_tokens[batch_idx], next_scores[batch_idx])
         ):
-            # get beam and token IDs
+            # get beam and token IDs (undo beam offset)
             beam_id = beam_token_id // ensemble_state['vocab_size']
             token_id = beam_token_id % ensemble_state['vocab_size']
 
             effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
+            # import ipdb; ipdb.set_trace()
             # add to generated hypotheses if end of sentence or last iteration
             if (ensemble_state['eos_token_id'] is not None) and (token_id.item() == ensemble_state['eos_token_id']):
                 # if beam_token does not belong to top num_beams tokens, it should not be added
@@ -483,6 +506,8 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             # the beam for next step is now full
             if len(next_sent_beam) == ensemble_state['num_beams']:
                 break
+
+        # import ipdb; ipdb.set_trace()
 
         # Check if we're done so that we can save a pad step if all(done)
         ensemble_state['done'][batch_idx] = ensemble_state['done'][batch_idx] or ensemble_state['generated_hyps'][batch_idx].is_done(
@@ -502,19 +527,23 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     assert len(next_batch_beam) == ensemble_state['batch_size'] * ensemble_state['num_beams']
 
     # Note we shouldn't need to deal with beam scores on the component_states
+    # Chris: the score of each item is this timestep's score + previous beam score
     ensemble_state['beam_scores'] = ensemble_state['beam_scores'].new([x[0] for x in next_batch_beam])
 
     # re-order batch
     beam_tokens = ensemble_state['input_ids'].new([x[1] for x in next_batch_beam])
     beam_idx = ensemble_state['input_ids'].new([x[2] for x in next_batch_beam])
 
+    # TODO: possible bug land here
     # TODO: WORKING: set input_ids, cur_len, past on all component states and on ensemble_state
     for state in component_states:
-        state['input_ids'] = state['input_ids'][beam_idx, :]
-        state['input_ids'] = torch.cat([state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
+        state['input_ids'] = ensemble_state['input_ids'][beam_idx, :]
+        state['input_ids'] = torch.cat([ensemble_state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
 
     ensemble_state['input_ids'] = ensemble_state['input_ids'][beam_idx, :]
     ensemble_state['input_ids'] = torch.cat([ensemble_state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
+
+    # import ipdb; ipdb.set_trace()
 
     # re-order internal states
     # Note ensemble_state has no "past", this is only on component_states
@@ -547,7 +576,6 @@ def beam_search_step(state):
     if state.get('outputs', None) is None:
         outputs = outputs_from_state(state)
 
-    print(f'shape of outputs[0]: {outputs[0].shape}')
     next_token_logits = outputs[0][:, -1, :]  # (batch_size * num_beams, vocab_size)
 
     # if model has past, then set the past variable to speed up decoding
@@ -774,7 +802,6 @@ def greedy_step(state):
             next_token_logits,
             state['batch_size'], 1, state['input_ids'], state['repetition_penalty'])
 
-    # TODO: WORKING: cur_len will need to be updated
     if state['no_repeat_ngram_size'] > 0:
         # calculate a list of banned tokens to prevent repetitively generating the same ngrams
         # from fairseq: https://github.com/pytorch/fairseq/blob/a07cb6f40480928c9e0548b737aadd36ee66ac76/fairseq/sequence_generator.py#L345

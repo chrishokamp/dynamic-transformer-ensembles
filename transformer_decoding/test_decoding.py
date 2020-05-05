@@ -92,8 +92,8 @@ class TestTransformerDecoding(unittest.TestCase):
         cls.tokenizer = BartTokenizer.from_pretrained('bart-large-cnn')
 
         cls.decoding_hyperparams = {
-            'max_length': 75,
-            'num_beams': 2
+            'max_length': 40,
+            'num_beams': 3
         }
 
         cls.test_news_article_1 = 'New Zealand says it has stopped community transmission of Covid-19, ' \
@@ -166,6 +166,8 @@ class TestTransformerDecoding(unittest.TestCase):
         for o1_ids, o2_ids in zip(ensemble_state_1['input_ids'], ensemble_state_2['input_ids']):
             o1_text = self.tokenizer.decode(o1_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
             o2_text = self.tokenizer.decode(o2_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            print(f'o1_text: {o1_text}')
+            print(f'o1_ids: {o1_ids}')
             assert o1_text == o2_text
 
 
