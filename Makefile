@@ -17,6 +17,11 @@ MAX_ARTICLES_IN_CLUSTER := 5
 #TEST_RESOURCES_VERSION ?= test
 #
 
+# WCEP dataset location
+# gs://aylien-science-datasets/summarization/MultiNews/
+# gs://aylien-science-datasets/summarization/WCEP/
+# gsutil cp -r gs://aylien-science-datasets/summarization/WCEP
+
 RUN_FLAGS    ?=
 
 ###########
