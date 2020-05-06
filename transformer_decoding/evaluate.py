@@ -83,8 +83,11 @@ def summarize_articles(articles, args):
     return predictions
 
 
-def article_to_text(article):
-    return f'{article["title"]} {article["text"]}'
+def article_to_text(article, separator_token=' '):
+    # just be sure about whitespace
+    title = ' '.join(article["title"].strip().split())
+    text = ' '.join(article["text"].strip().split())
+    return f'{title} {separator_token} {text}'
 
 
 def main(args):
