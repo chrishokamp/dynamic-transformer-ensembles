@@ -1,3 +1,15 @@
+#### fine-tuning on multi-doc summarization datasets
+(1) flatten dataset (currently see notebooks) to cnn-dm *.sources and *.targets format
+(2) run `bin/run_train.sh`
+```
+pip install -U git+http://github.com/PyTorchLightning/pytorch-lightning/
+
+# - '' is a correct model identifier listed on 'https://huggingface.co/models'
+
+# - or '' is the correct path to a directory containing a 'config.json' file
+
+```
+
 5.5.20 -- for discussion, results of dynamic ensembling on WCEP test.jsonl with 1 article vs 5 articles:
 ```
 RUN_FLAGS='--max-articles-in-cluster 1' make evaluate

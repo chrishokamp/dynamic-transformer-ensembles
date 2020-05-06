@@ -5,17 +5,11 @@
 #CONTAINER     :=
 #VERSION       := `cat VERSION`
 
-# EVALUATION ARGS
-EVALUATION_DATASET      := data/WCEP/test.jsonl
-MODEL_ID                := bart-large-cnn
-MAX_ARTICLES_IN_CLUSTER := 5
-
 ## Resources
 #RESOURCES_ROOT    := gs://aylien-science-files/dynamic-ensembles
 #RESOURCES_VERSION ?= 1
-#
+
 #TEST_RESOURCES_VERSION ?= test
-#
 
 # WCEP dataset location
 # gs://aylien-science-datasets/summarization/MultiNews/
@@ -24,12 +18,18 @@ MAX_ARTICLES_IN_CLUSTER := 5
 
 # FINE-TUNING (Training BART with in-domain data)
 # summarization datadir (TODO: format of this data?)
-#DATA_DIR :=
-#MODEL_NAME_OR_PATH :=
-#OUTPUT_DIR :=
+DATADIR                := 'data/test_dataset'
+BASE_MODEL_NAME_OR_PATH := 'bart-large'
+OUTPUT_DIR             := 'fine-tuned-model'
+
+# EVALUATION ARGS
+EVALUATION_DATASET      := data/WCEP/test.jsonl
+MODEL_ID                := bart-large-cnn
+MAX_ARTICLES_IN_CLUSTER := 5
 
 # used for flags and additional script args
 RUN_FLAGS    ?=
+
 
 ###########
 ## TASKS ##
@@ -43,14 +43,17 @@ evaluate:
 		$(RUN_FLAGS)
 
 .PHONY: fine-tune-bart
+fine-tune-bart:
+	mkdir -p $(OUTPUT_DIR)
 	python bin/run_bart_sum.py \
-		--data_dir=./cnn-dailymail/cnn_dm \
+		--data_dir=$(DATADIR) \
 		--model_type=bart \
-		--model_name_or_path=bart-large \
+		--model_name_or_path=$(BASE_MODEL_NAME_OR_PATH) \
 		--learning_rate=3e-5 \
 		--train_batch_size=4 \
 		--eval_batch_size=4 \
-		--output_dir=$OUTPUT_DIR \
+		--output_dir=$(OUTPUT_DIR) \
+		--n_gpu=0 \
 		--do_train
 
 resources/$(TEST_RESOURCES_VERSION):
