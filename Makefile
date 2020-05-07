@@ -19,10 +19,13 @@
 # FINE-TUNING (Training BART with in-domain data)
 # summarization datadir (TODO: format of this data?)
 DATADIR                 ?= 'data/test_dataset'
-BASE_MODEL_NAME_OR_PATH ?= 'bart-large'
+BASE_MODEL_NAME_OR_PATH ?= 'bart-large-cnn'
 OUTPUT_DIR              ?= 'fine-tuned-model'
-N_GPU                   ?= 1
-MAX_SEQ_LEN             ?= 512
+N_GPU                   ?= 0
+MAX_SOURCE_LEN             ?= 512
+MAX_TARGET_LEN             ?= 60
+TRAIN_BATCH_SIZE        ?= 1
+EVAL_BATCH_SIZE         ?= 1
 
 # EVALUATION ARGS
 EVALUATION_DATASET      ?= data/WCEP/test.jsonl
@@ -47,17 +50,33 @@ evaluate:
 .PHONY: fine-tune-bart
 fine-tune-bart:
 	mkdir -p $(OUTPUT_DIR)
-	python bin/run_bart_sum.py \
+	python bin/finetune.py \
 		--data_dir $(DATADIR) \
 		--model_type bart \
 		--model_name_or_path $(BASE_MODEL_NAME_OR_PATH) \
 		--learning_rate 3e-5 \
-		--train_batch_size 7\
-		--eval_batch_size 4 \
-                --max_seq_length $(MAX_SEQ_LEN) \
+		--train_batch_size $(TRAIN_BATCH_SIZE) \
+		--eval_batch_size $(EVAL_BATCH_SIZE) \
+		 --max_source_length $(MAX_SOURCE_LEN) \
+		 --max_target_length $(MAX_TARGET_LEN) \
 		--output_dir $(OUTPUT_DIR) \
 		--n_gpu $(N_GPU) \
 		--do_train
+
+#.PHONY: fine-tune-bart
+#fine-tune-bart:
+#	mkdir -p $(OUTPUT_DIR)
+#	python bin/run_bart_sum.py \
+#		--data_dir $(DATADIR) \
+#		--model_type bart \
+#		--model_name_or_path $(BASE_MODEL_NAME_OR_PATH) \
+#		--learning_rate 3e-5 \
+#		--train_batch_size $(TRAIN_BATCH_SIZE) \
+#		--eval_batch_size $(EVAL_BATCH_SIZE) \
+#        --max_seq_length $(MAX_SEQ_LEN) \
+#		--output_dir $(OUTPUT_DIR) \
+#		--n_gpu $(N_GPU) \
+#		--do_train
 
 resources/$(TEST_RESOURCES_VERSION):
 	mkdir -p ./resources
