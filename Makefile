@@ -18,14 +18,16 @@
 
 # FINE-TUNING (Training BART with in-domain data)
 # summarization datadir (TODO: format of this data?)
-DATADIR                := 'data/test_dataset'
-BASE_MODEL_NAME_OR_PATH := 'bart-large'
-OUTPUT_DIR             := 'fine-tuned-model'
+DATADIR                 ?= 'data/test_dataset'
+BASE_MODEL_NAME_OR_PATH ?= 'bart-large'
+OUTPUT_DIR              ?= 'fine-tuned-model'
+N_GPU                   ?= 1
+MAX_SEQ_LEN             ?= 512
 
 # EVALUATION ARGS
-EVALUATION_DATASET      := data/WCEP/test.jsonl
-MODEL_ID                := bart-large-cnn
-MAX_ARTICLES_IN_CLUSTER := 5
+EVALUATION_DATASET      ?= data/WCEP/test.jsonl
+MODEL_ID                ?= bart-large-cnn
+MAX_ARTICLES_IN_CLUSTER ?= 5
 
 # used for flags and additional script args
 RUN_FLAGS    ?=
@@ -46,14 +48,15 @@ evaluate:
 fine-tune-bart:
 	mkdir -p $(OUTPUT_DIR)
 	python bin/run_bart_sum.py \
-		--data_dir=$(DATADIR) \
-		--model_type=bart \
-		--model_name_or_path=$(BASE_MODEL_NAME_OR_PATH) \
-		--learning_rate=3e-5 \
-		--train_batch_size=4 \
-		--eval_batch_size=4 \
-		--output_dir=$(OUTPUT_DIR) \
-		--n_gpu=0 \
+		--data_dir $(DATADIR) \
+		--model_type bart \
+		--model_name_or_path $(BASE_MODEL_NAME_OR_PATH) \
+		--learning_rate 3e-5 \
+		--train_batch_size 7\
+		--eval_batch_size 4 \
+                --max_seq_length $(MAX_SEQ_LEN) \
+		--output_dir $(OUTPUT_DIR) \
+		--n_gpu $(N_GPU) \
 		--do_train
 
 resources/$(TEST_RESOURCES_VERSION):
