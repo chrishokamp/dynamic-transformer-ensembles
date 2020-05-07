@@ -435,7 +435,9 @@ def ensembled_beam_search_step(component_states, ensemble_state):
 
         # TODO: put this side-effect somewhere reasonable
         # if model has past, then set the past variable to speed up decoding
-        if state['model']._do_output_past(state['outputs']):
+        #if state['model']._do_output_past(state['outputs']):
+        #    state['past'] = state['outputs'][1]
+        if state['model']._use_cache(state['outputs'], use_cache=True):
             state['past'] = state['outputs'][1]
 
     # CHRIS: WORKING HERE

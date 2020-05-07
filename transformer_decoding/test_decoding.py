@@ -85,9 +85,9 @@ class TestTransformerDecoding(unittest.TestCase):
         # as decoding proceeds, input_ids will hold current state
         # IDEA: pass a list of states, and one additional state to hold their combined outputs
         test_articles_1 = [self.test_news_article_1, self.test_news_article_2]
-        component_states_1 = [get_start_state(a, self.model, self.tokenizer, self.decoding_hyperparams)
+        component_states_1 = [decoding_utils.get_start_state(a, self.model, self.tokenizer, self.decoding_hyperparams)
                             for a in test_articles_1]
-        ensemble_state_1 = get_start_state(test_articles_1[0], self.model, self.tokenizer, self.decoding_hyperparams)
+        ensemble_state_1 = decoding_utils.get_start_state(test_articles_1[0], self.model, self.tokenizer, self.decoding_hyperparams)
 
         # TODO: at the beginning of decoding, the ensemble state doesn't know anything about the component states
         #  - we should try to encode this explicitly by _not_ passing an input to initialize this state
@@ -112,9 +112,9 @@ class TestTransformerDecoding(unittest.TestCase):
 
         # reorder articles and run again
         test_articles_2 = [self.test_news_article_2, self.test_news_article_1]
-        component_states_2 = [get_start_state(a, self.model, self.tokenizer, self.decoding_hyperparams)
+        component_states_2 = [decoding_utils.get_start_state(a, self.model, self.tokenizer, self.decoding_hyperparams)
                               for a in test_articles_2]
-        ensemble_state_2 = get_start_state(test_articles_2[0], self.model, self.tokenizer, self.decoding_hyperparams)
+        ensemble_state_2 = decoding_utils.get_start_state(test_articles_2[0], self.model, self.tokenizer, self.decoding_hyperparams)
 
         component_states_2, ensemble_state_2 = \
             decoding_utils.generate(component_states_2, self.decoding_hyperparams['max_length'],
