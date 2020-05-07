@@ -101,16 +101,25 @@ def main(args):
     args = dict(hardcoded_args, **args)
 
     # load pretrained or finetuned transformer model
-    args['model'] = BartForConditionalGeneration.from_pretrained(args['model_id'])
-    args['tokenizer'] = BartTokenizer.from_pretrained(args['model_id'])
+
+    # transformers pretrained
+    #args['model'] = BartForConditionalGeneration.from_pretrained(args['model_id'])
+    #args['tokenizer'] = BartTokenizer.from_pretrained(args['model_id'])
+
+    # fine-tuned
+    from transformer_decoding.finetune import SummarizationTrainer
+    lightning_model = SummarizationTrainer.load_from_checkpoint('/data/experiments/summarization/wcep_fine-tune-bart-large/checkpointepoch=1.ckpt')
+    args['model'] = lightning_model.model
+    args['tokenizer'] = lightning_model.tokenizer
 
     # Set the model in evaluation mode to deactivate the DropOut modules
     # This is IMPORTANT to have reproducible results during evaluation!
     args['model'].eval()
 
+    # WORKING: we have to load fine-tuned models in a different way because of pytorch-lightning
+
     if torch.cuda.is_available():
         args['model'].to('cuda')
-
 
     # summarize MDS / summarization dataset with model
 
