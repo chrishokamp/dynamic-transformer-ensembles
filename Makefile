@@ -22,8 +22,8 @@ DATADIR                 ?= 'data/test_dataset'
 BASE_MODEL_NAME_OR_PATH ?= 'bart-large-cnn'
 OUTPUT_DIR              ?= 'fine-tuned-model'
 N_GPU                   ?= 0
-MAX_SOURCE_LEN             ?= 512
-MAX_TARGET_LEN             ?= 60
+MAX_SOURCE_LEN          ?= 512
+MAX_TARGET_LEN          ?= 60
 TRAIN_BATCH_SIZE        ?= 1
 EVAL_BATCH_SIZE         ?= 1
 
