@@ -341,10 +341,13 @@ def outputs_from_state(state):
     """
     Run forward pass using a state, note this only works for states with a 'model' attribute
     """
+    # TODO: understand exact effect of use_cache (added in transformers master)
     model_inputs = state['model'].prepare_inputs_for_generation(
         state['input_ids'],
         past=state['past'],
-        attention_mask=state['attention_mask'])
+        attention_mask=state['attention_mask'],
+        use_cache=True
+    )
     outputs = state['model'](**model_inputs)  # (batch_size * num_beams, cur_len, vocab_size)
     return outputs
 
