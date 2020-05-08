@@ -101,7 +101,6 @@ def main(args):
     args = dict(hardcoded_args, **args)
 
     # load pretrained or finetuned transformer model
-
     print(f'loading pre-trained model: {args["model_id"]}')
 
     # fine-tuned
@@ -128,7 +127,8 @@ def main(args):
 
     # print and write out evaluation results
     # TODO: WORKING: in general we want to be able to ensemble both models _and_
-    dataset = [json.loads(l) for l in open(args['evaluation_dataset'])][:args['rows_to_eval']]
+    if args['evaluation_dataset'].endswith('.json'):
+        dataset = [json.loads(l) for l in open(args['evaluation_dataset'])][:args['rows_to_eval']]
 
     # WORKING: also write out summaries as they're generated
     preds_output = open('eval_predicted_summaries.out', 'w', buffering=1)
