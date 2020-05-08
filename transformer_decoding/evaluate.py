@@ -102,15 +102,18 @@ def main(args):
 
     # load pretrained or finetuned transformer model
 
-    # transformers pretrained
-    #args['model'] = BartForConditionalGeneration.from_pretrained(args['model_id'])
-    #args['tokenizer'] = BartTokenizer.from_pretrained(args['model_id'])
+    print(f'loading pre-trained model: {args["model_id"]}')
 
     # fine-tuned
-    from transformer_decoding.finetune import SummarizationTrainer
-    lightning_model = SummarizationTrainer.load_from_checkpoint('/data/experiments/summarization/wcep_fine-tune-bart-large/checkpointepoch=1.ckpt')
-    args['model'] = lightning_model.model
-    args['tokenizer'] = lightning_model.tokenizer
+    if args['model_id'].endswith('.ckpt'):
+    	from transformer_decoding.finetune import SummarizationTrainer
+    	lightning_model = SummarizationTrainer.load_from_checkpoint(args['model_id'])
+    	args['model'] = lightning_model.model
+    	args['tokenizer'] = lightning_model.tokenizer
+    else:
+        # transformers pretrained
+        args['model'] = BartForConditionalGeneration.from_pretrained(args['model_id'])
+        args['tokenizer'] = BartTokenizer.from_pretrained(args['model_id'])
 
     # Set the model in evaluation mode to deactivate the DropOut modules
     # This is IMPORTANT to have reproducible results during evaluation!
@@ -127,6 +130,10 @@ def main(args):
     # TODO: WORKING: in general we want to be able to ensemble both models _and_
     dataset = [json.loads(l) for l in open(args['evaluation_dataset'])][:args['rows_to_eval']]
 
+    # WORKING: also write out summaries as they're generated
+    preds_output = open('eval_predicted_summaries.out', 'w', buffering=1)
+    gold_output = open('eval_gold_summaries.out', 'w', buffering=1)
+
     summaries = []
     # get summary for each cluster
     # note here we have a macro-batch size of one cluster by definition
@@ -140,7 +147,14 @@ def main(args):
         #print(f'Reference Summary:\n{cluster["summary"]}')
 
         # NOTE: hack to just take the first one right now, disregarding scores of different beam items
-        summaries.append((predictions[0], cluster['summary']))
+        predicted_summary = predictions[0]
+        gold_summary = cluster['summary']
+        summaries.append((predicted_summary, gold_summary))
+        preds_output.write(f'{predicted_summary}\n')
+        gold_output.write(f'{gold_summary}\n')
+
+    preds_output.close()
+    gold_output.close()
 
     # WORKING: get summary, append (or eval online)
     # Now evaluate
@@ -148,6 +162,7 @@ def main(args):
     results = dict((rouge_type, defaultdict(list))
                    for rouge_type in rouge_types)
 
+    # TODO: move to config args
     lowercase = True
 
     for hyp, ref in summaries:
