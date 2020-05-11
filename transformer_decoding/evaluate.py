@@ -31,6 +31,30 @@ def print_mean(results, rouge_types):
         print(rouge_type, 'p:', p, 'r:', r, 'f:', f)
 
 
+def evaluate_rouge(hyps, refs, lowercase=True):
+    # WORKING: get summary, append (or eval online)
+    # Now evaluate
+    rouge_types = ['rouge-1', 'rouge-2', 'rouge-l']
+    results = dict((rouge_type, defaultdict(list))
+                   for rouge_type in rouge_types)
+
+    for hyp, ref in zip(hyps, refs):
+        if lowercase:
+            hyp = hyp.lower()
+            ref = ref.lower()
+
+        r1 = ROUGE_N(ref, hyp, n=1)
+        r2 = ROUGE_N(ref, hyp, n=2)
+        rl = ROUGE_L(ref, hyp)
+
+        for (rouge_type, scores) in zip(rouge_types, [r1, r2, rl]):
+            results[rouge_type]['p'].append(scores.precision)
+            results[rouge_type]['r'].append(scores.recall)
+            results[rouge_type]['f'].append(scores.fscore)
+
+    return results, rouge_types
+
+
 class BartSummarizerConfig:
     def __init__(self, args):
         """
@@ -94,9 +118,7 @@ def main(args):
 
     # TODO: all args in CLI
     hardcoded_args = {
-        'model_id': 'bart-large-cnn',
-        'max_length': 40,
-        'num_beams': 3,
+        'num_beams': 3
     }
     args = dict(hardcoded_args, **args)
 
@@ -127,8 +149,10 @@ def main(args):
 
     # print and write out evaluation results
     # TODO: WORKING: in general we want to be able to ensemble both models _and_
-    if args['evaluation_dataset'].endswith('.json'):
+    if args['evaluation_dataset'].endswith('.jsonl'):
         dataset = [json.loads(l) for l in open(args['evaluation_dataset'])][:args['rows_to_eval']]
+    else:
+        raise AssertionError('Right now we only know how to handle .jsonl evaluation datasets')
 
     # WORKING: also write out summaries as they're generated
     preds_output = open('eval_predicted_summaries.out', 'w', buffering=1)
@@ -156,28 +180,8 @@ def main(args):
     preds_output.close()
     gold_output.close()
 
-    # WORKING: get summary, append (or eval online)
-    # Now evaluate
-    rouge_types = ['rouge-1', 'rouge-2', 'rouge-l']
-    results = dict((rouge_type, defaultdict(list))
-                   for rouge_type in rouge_types)
-
-    # TODO: move to config args
-    lowercase = True
-
-    for hyp, ref in summaries:
-        if lowercase:
-            hyp = hyp.lower()
-            ref = ref.lower()
-
-        r1 = ROUGE_N(ref, hyp, n=1)
-        r2 = ROUGE_N(ref, hyp, n=2)
-        rl = ROUGE_L(ref, hyp)
-
-        for (rouge_type, scores) in zip(rouge_types, [r1, r2, rl]):
-            results[rouge_type]['p'].append(scores.precision)
-            results[rouge_type]['r'].append(scores.recall)
-            results[rouge_type]['f'].append(scores.fscore)
+    hyps, refs = zip(*summaries)
+    results, rouge_types = evaluate_rouge(hyps, refs)
 
     print_mean(results, rouge_types)
 
@@ -200,7 +204,14 @@ def parse_args():
         '--model-id',
         type=str,
         required=True,
-        help='(currently) the model id string from the huggingface transformers library'
+        help='the model id string from the huggingface transformers library, or the path to a pytorch lightning fine-tuned .ckpt'
+    )
+    parser.add_argument(
+        '--max-length',
+        type=int,
+        required=False,
+        default=40,
+        help='The maximum length of decoded sequences'
     )
     parser.add_argument(
         '--max-articles-in-cluster',
