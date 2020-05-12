@@ -50,15 +50,15 @@ evaluate:
 .PHONY: fine-tune-bart
 fine-tune-bart:
 	mkdir -p $(OUTPUT_DIR)
-	python bin/finetune.py \
+	python transformer_decoding/finetune.py \
 		--data_dir $(DATADIR) \
 		--model_type bart \
 		--model_name_or_path $(BASE_MODEL_NAME_OR_PATH) \
 		--learning_rate 3e-5 \
 		--train_batch_size $(TRAIN_BATCH_SIZE) \
 		--eval_batch_size $(EVAL_BATCH_SIZE) \
-		 --max_source_length $(MAX_SOURCE_LEN) \
-		 --max_target_length $(MAX_TARGET_LEN) \
+		--max_source_length $(MAX_SOURCE_LEN) \
+		--max_target_length $(MAX_TARGET_LEN) \
 		--output_dir $(OUTPUT_DIR) \
 		--n_gpu $(N_GPU) \
 		--do_train

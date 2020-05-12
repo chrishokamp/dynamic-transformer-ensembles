@@ -163,6 +163,11 @@ def main(args):
     # note here we have a macro-batch size of one cluster by definition
     for cluster in tqdm.tqdm(dataset):
         articles = [article_to_text(a) for a in cluster['articles'][:args['max_articles_in_cluster']]]
+        if args['min_input_char_length'] is not None:
+            articles_ = [a for a in articles if len(a) >= args['min_input_char_length']]
+            if len(articles_) == 0:
+                articles_ = [articles[0]]
+            articles = articles_
 
         predictions = summarize_articles(articles, args)
         #print(f'Predictions: \n{predictions}')
@@ -205,6 +210,13 @@ def parse_args():
         type=str,
         required=True,
         help='the model id string from the huggingface transformers library, or the path to a pytorch lightning fine-tuned .ckpt'
+    )
+    parser.add_argument(
+        '--min-input-char-length',
+        type=int,
+        required=False,
+        default=None,
+        help='If specified, we will try to filter inputs to be at least this many characters'
     )
     parser.add_argument(
         '--max-length',
