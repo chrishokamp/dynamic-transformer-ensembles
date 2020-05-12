@@ -122,10 +122,13 @@ def summarize_articles(articles, args):
             final_tokens = ensemble_state['input_ids'][effective_beam_id]
             ensemble_state['generated_hyps'][batch_idx].add(final_tokens, final_score)
 
-    # sort hyps by score
-    sorted_hyps = [(hyp, score) for score, hyp in sorted(ensemble_state['generated_hyps'].beams, key=lambda b: b[0], reverse=True)]
 
-    # assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
+     assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
+    assert ensemble_state['batch_size'] == 1, 'current logic assumes batch size = 1'
+
+    # sort hyps by score (0 index is first batch, and we're assuming batch_size always = 1 right now)
+    sorted_hyps = [(hyp, score) for score, hyp in sorted(ensemble_state['generated_hyps'][0].beams, key=lambda b: b[0], reverse=True)]
+
     #predictions = [tokenizer.decode(input_ids,
     #                                skip_special_tokens=True,
     #                                clean_up_tokenization_spaces=False)
