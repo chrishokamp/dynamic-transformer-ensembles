@@ -99,6 +99,7 @@ def initialize_generation(
         num_return_sequences=None,
         attention_mask=None,
         decoder_start_token_id=None,
+        **kwargs
 ):
     # We cannot generate if the model does not have a LM head
     if model.get_output_embeddings() is None:
