@@ -122,13 +122,21 @@ def summarize_articles(articles, args):
             final_tokens = ensemble_state['input_ids'][effective_beam_id]
             ensemble_state['generated_hyps'][batch_idx].add(final_tokens, final_score)
 
-    import ipdb; ipdb.set_trace()
+    # sort hyps by score
+    sorted_hyps = [(hyp, score) for score, hyp in sorted(ensemble_state['generated_hyps'].beams, key=lambda b: b[0], reverse=True)]
 
     # assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
-    predictions = [tokenizer.decode(input_ids,
+    #predictions = [tokenizer.decode(input_ids,
+    #                                skip_special_tokens=True,
+    #                                clean_up_tokenization_spaces=False)
+    #               for input_ids in ensemble_state['input_ids']]
+
+    predictions = [tokenizer.decode(hyp,
                                     skip_special_tokens=True,
                                     clean_up_tokenization_spaces=False)
-                   for input_ids in ensemble_state['input_ids']]
+                   for hyp, _ in sorted_hyps]
+
+    import ipdb; ipdb.set_trace()
 
     # TODO: currently `summaries` contains `beam_size` predictions, not sorted by score
     return predictions
