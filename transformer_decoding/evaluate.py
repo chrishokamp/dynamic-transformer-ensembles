@@ -124,7 +124,7 @@ def summarize_articles(articles, args):
             ensemble_state['generated_hyps'][batch_idx].add(final_tokens, final_score)
 
 
-    assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
+    #assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
     assert ensemble_state['batch_size'] == 1, 'current logic assumes batch size = 1'
 
     # sort hyps by score (0 index is first batch, and we're assuming batch_size always = 1 right now)
