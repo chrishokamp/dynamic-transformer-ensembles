@@ -99,6 +99,29 @@ def summarize_articles(articles, args):
                                 ensemble_state=ensemble_state)
 
     # WORKING HERE: make sure predictions are sorted by score
+    # TODO: this logic might move to end of `generate` function(?)
+    # finalize all open beam hypotheses and end to generated hypotheses
+    for batch_idx in range(ensemble_state['batch_size']):
+        if ensemble_state['done'][batch_idx]:
+            continue
+
+        # test that beam scores match previously calculated scores if not eos and batch_idx not done
+        if ensemble_state['eos_token_id'] is not None and all(
+                (token_id % ensemble_state['vocab_size']).item() is not ensemble_state['eos_token_id'] for token_id in ensemble_state['next_tokens'][batch_idx]
+        ):
+            assert torch.all(
+                ensemble_state['next_scores'][batch_idx, :ensemble_state['num_beams']] == ensemble_state['beam_scores'].view(ensemble_state['batch_size'], ensemble_state['num_beams'])[batch_idx]
+            ), "If batch_idx is not done, final next scores: {} have to equal to accumulated beam_scores: {}".format(
+                ensemble_state['next_scores'][:, :ensemble_state['num_beams']][batch_idx], ensemble_state['beam_scores'].view(ensemble_state['batch_size'], ensemble_state['num_beams'])[batch_idx],
+            )
+
+        # need to add best num_beams hypotheses to generated hyps
+        for beam_id in range(ensemble_state['num_beams']):
+            effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
+            final_score = ensemble_state['beam_scores'][effective_beam_id].item()
+            final_tokens = ensemble_state['input_ids'][effective_beam_id]
+            ensemble_state['generated_hyps'][batch_idx].add(final_tokens, final_score)
+
     import ipdb; ipdb.set_trace()
 
     # assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
