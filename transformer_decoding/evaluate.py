@@ -155,12 +155,6 @@ def article_to_text(article, separator_token=' '):
 
 def main(args):
 
-    # TODO: all args in CLI
-    hardcoded_args = {
-        'num_beams': 3
-    }
-    args = dict(hardcoded_args, **args)
-
     # load pretrained or finetuned transformer model
     print(f'loading pre-trained model: {args["model_id"]}')
 
@@ -249,6 +243,13 @@ def parse_args():
         type=str,
         required=True,
         help='the model id string from the huggingface transformers library, or the path to a pytorch lightning fine-tuned .ckpt'
+    )
+    parser.add_argument(
+        '--num-beams',
+        type=int,
+        required=False,
+        default=1,
+        help='number of beam search beams'
     )
     parser.add_argument(
         '--min-input-char-length',
