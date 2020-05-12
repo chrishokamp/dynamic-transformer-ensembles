@@ -85,7 +85,8 @@ def summarize_articles(articles, args):
     model = args['model']
     tokenizer = args['tokenizer']
     decoding_hyperparams = {
-        'max_length': args['max_length'],
+        'max_length': args['max_src_length'],
+        'max_tgt_length': args['max_tgt_length'],
         'num_beams': args['num_beams']
     }
 
@@ -94,7 +95,7 @@ def summarize_articles(articles, args):
     ensemble_state = decoding_utils.get_start_state(articles[0], model, tokenizer, decoding_hyperparams)
 
     component_states, ensemble_state = \
-        decoding_utils.generate(component_states, decoding_hyperparams['max_length'],
+        decoding_utils.generate(component_states, decoding_hyperparams['max_tgt_length'],
                                 ensemble_state=ensemble_state)
 
     # assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
@@ -148,7 +149,7 @@ def main(args):
     # summarize MDS / summarization dataset with model
 
     # print and write out evaluation results
-    # TODO: WORKING: in general we want to be able to ensemble both models _and_
+    # TODO: WORKING: in general we want to be able to ensemble both models _and_ inputs
     if args['evaluation_dataset'].endswith('.jsonl'):
         dataset = [json.loads(l) for l in open(args['evaluation_dataset'])][:args['rows_to_eval']]
     else:
@@ -219,7 +220,14 @@ def parse_args():
         help='If specified, we will try to filter inputs to be at least this many characters'
     )
     parser.add_argument(
-        '--max-length',
+        '--max-src-length',
+        type=int,
+        required=False,
+        default=40,
+        help='The maximum length of input sequences'
+    )
+    parser.add_argument(
+        '--max-tgt-length',
         type=int,
         required=False,
         default=40,

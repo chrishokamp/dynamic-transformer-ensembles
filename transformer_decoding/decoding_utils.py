@@ -43,7 +43,6 @@ def get_start_state(text, model, tokenizer, decoding_hyperparams):
     if torch.cuda.is_available():
         decoder_state['input_ids'] = decoder_state['input_ids'].to('cuda')
 
-
     # TODO: clarify interfaces
     #  still don't know whether to use BeamHypotheses or not
     #  generated hypotheses -- this may move to
@@ -327,6 +326,7 @@ def get_initial_decoding_state(text, model, tokenizer, decoding_hyperparams):
     inputs = tokenizer.batch_encode_plus(
         [text],
         max_length=decoding_hyperparams['max_length'],
+        pad_to_max_length=True,
         return_tensors='pt'
     )
     input_ids = inputs['input_ids']
@@ -435,8 +435,6 @@ def ensembled_beam_search_step(component_states, ensemble_state):
 
         # TODO: put this side-effect somewhere reasonable
         # if model has past, then set the past variable to speed up decoding
-        #if state['model']._do_output_past(state['outputs']):
-        #    state['past'] = state['outputs'][1]
         if state['model']._use_cache(state['outputs'], use_cache=True):
             state['past'] = state['outputs'][1]
 
@@ -463,6 +461,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     #    )[None, :]
 
     # TODO: just simple mean of logprobs as first try, later more sophisticated weighting
+    # - TODO: inject reduce function with `torch.mean` as default
     ensemble_state['scores'] = torch.mean(torch.stack([s['scores'] for s in component_states]), dim=0)
 
     # BEGIN: ways of selecting next token from scores
