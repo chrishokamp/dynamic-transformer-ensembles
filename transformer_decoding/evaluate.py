@@ -106,14 +106,15 @@ def summarize_articles(articles, args):
             continue
 
         # test that beam scores match previously calculated scores if not eos and batch_idx not done
-        if ensemble_state['eos_token_id'] is not None and all(
-                (token_id % ensemble_state['vocab_size']).item() is not ensemble_state['eos_token_id'] for token_id in ensemble_state['next_tokens'][batch_idx]
-        ):
-            assert torch.all(
-                ensemble_state['next_scores'][batch_idx, :ensemble_state['num_beams']] == ensemble_state['beam_scores'].view(ensemble_state['batch_size'], ensemble_state['num_beams'])[batch_idx]
-            ), "If batch_idx is not done, final next scores: {} have to equal to accumulated beam_scores: {}".format(
-                ensemble_state['next_scores'][:, :ensemble_state['num_beams']][batch_idx], ensemble_state['beam_scores'].view(ensemble_state['batch_size'], ensemble_state['num_beams'])[batch_idx],
-            )
+        # Chris: TODO: we don't currently store `next_tokens` on state at each decoding step
+        #if ensemble_state['eos_token_id'] is not None and all(
+        #        (token_id % ensemble_state['vocab_size']).item() is not ensemble_state['eos_token_id'] for token_id in ensemble_state['next_tokens'][batch_idx]
+        #):
+        #    assert torch.all(
+        #        ensemble_state['next_scores'][batch_idx, :ensemble_state['num_beams']] == ensemble_state['beam_scores'].view(ensemble_state['batch_size'], ensemble_state['num_beams'])[batch_idx]
+        #    ), "If batch_idx is not done, final next scores: {} have to equal to accumulated beam_scores: {}".format(
+        #        ensemble_state['next_scores'][:, :ensemble_state['num_beams']][batch_idx], ensemble_state['beam_scores'].view(ensemble_state['batch_size'], ensemble_state['num_beams'])[batch_idx],
+        #    )
 
         # need to add best num_beams hypotheses to generated hyps
         for beam_id in range(ensemble_state['num_beams']):
