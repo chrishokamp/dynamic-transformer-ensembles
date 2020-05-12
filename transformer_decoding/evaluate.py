@@ -98,6 +98,9 @@ def summarize_articles(articles, args):
         decoding_utils.generate(component_states, decoding_hyperparams['max_tgt_length'],
                                 ensemble_state=ensemble_state)
 
+    # WORKING HERE: make sure predictions are sorted by score
+    import ipdb; ipdb.set_trace()
+
     # assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
     predictions = [tokenizer.decode(input_ids,
                                     skip_special_tokens=True,
@@ -223,14 +226,14 @@ def parse_args():
         '--max-src-length',
         type=int,
         required=False,
-        default=40,
+        default=256,
         help='The maximum length of input sequences'
     )
     parser.add_argument(
         '--max-tgt-length',
         type=int,
         required=False,
-        default=40,
+        default=64,
         help='The maximum length of decoded sequences'
     )
     parser.add_argument(
