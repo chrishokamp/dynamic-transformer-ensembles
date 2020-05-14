@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tqdm
 import os
+import shutil
 from _collections import defaultdict
 
 import numpy as np
@@ -132,7 +133,6 @@ def write_for_rouge(all_reference_sents, decoded_words, ex_index, rouge_dec_dir,
             f.write(sent + "\n")
 
 
-# TODO: WORKING: support both newsroom and lebanoff et al eval within same function
 def lebanoff_2018_rouge(system_hyp_file, evaluation_dataset):
     TEMP_EVAL_DIR = Path('rouge_evaluation_tempdir')
     rouge_dec_dir = TEMP_EVAL_DIR / 'rouge_dec_dir'
@@ -159,6 +159,7 @@ def lebanoff_2018_rouge(system_hyp_file, evaluation_dataset):
 
     log_report = rouge_log(rouge_eval(rouge_ref_dir, rouge_dec_dir))
     print(log_report)
+    shutil.rmtree(TEMP_EVAL_DIR)
 
 # END: utils for Lebanoff 2018 rouge
 
