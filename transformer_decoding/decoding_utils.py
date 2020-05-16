@@ -557,7 +557,12 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             beam_id = beam_token_id // ensemble_state['vocab_size']
             token_id = beam_token_id % ensemble_state['vocab_size']
 
+            print(f'batch_idx: {batch_idx}, beam_token_rank: {beam_token_rank}, beam_id: {beam_id}, token_id: {token_id}')
+
             effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
+
+            print(f'effective_beam_id: {effective_beam_id}')
+
             # add to generated hypotheses if end of sentence or last iteration
             if (ensemble_state['eos_token_id'] is not None) and (token_id.item() == ensemble_state['eos_token_id']):
                 # if beam_token does not belong to top num_beams tokens, it should not be added
@@ -565,6 +570,9 @@ def ensembled_beam_search_step(component_states, ensemble_state):
                 if is_beam_token_worse_than_top_num_beams:
                     continue
                 # update beam hypotheses obj with finished hypothesis and score
+                # TODO: also add metadata here
+                # TODO: we are storing metadata on ensemble_state['decoding_stats'][effective_beam_id] in the same way we're
+                #  updating ensemble_state['input_ids'] at each timestep
                 ensemble_state['generated_hyps'][batch_idx].add(
                     ensemble_state['input_ids'][effective_beam_id].clone(), beam_token_score.item(),
                 )
@@ -572,8 +580,8 @@ def ensembled_beam_search_step(component_states, ensemble_state):
                 # add next predicted token if it is not eos_token
                 next_sent_beam.append((beam_token_score, token_id, effective_beam_id))
 
-            # the beam for next step is now full
             if len(next_sent_beam) == ensemble_state['num_beams']:
+                # the beam for next step is now full
                 break
 
         # Check if we're done so that we can save a pad step if all(done)
