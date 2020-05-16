@@ -477,6 +477,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     ensemble_state['scores'] = torch.mean(torch.stack([s['scores'] for s in component_states]), dim=0)
     # WORKING: understand how we can get the score of each chosen token in each beam for each component_state
     import ipdb; ipdb.set_trace()
+    print(f'component state score shapes:{[torch.Size([5, 50264]), torch.Size([5, 50264]), torch.Size([5, 50264])]}')
 
     # BEGIN: ways of selecting next token from scores
     if ensemble_state['do_sample']:
