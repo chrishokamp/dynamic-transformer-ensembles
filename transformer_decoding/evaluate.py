@@ -260,6 +260,7 @@ def summarize_articles(articles, args):
         #        ensemble_state['next_scores'][:, :ensemble_state['num_beams']][batch_idx], ensemble_state['beam_scores'].view(ensemble_state['batch_size'], ensemble_state['num_beams'])[batch_idx],
         #    )
 
+        # TODO: finished hyps (those that are `done`) should already be in `generated_hyps`, assert this is the case
         # need to add best num_beams hypotheses to generated hyps
         for beam_id in range(ensemble_state['num_beams']):
             effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id

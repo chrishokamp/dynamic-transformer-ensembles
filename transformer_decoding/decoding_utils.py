@@ -312,7 +312,7 @@ def initialize_generation(
     ])
 
 
-# TODO: remember critical assumption that all models use the same output space, we need to use this during
+# TODO: remember critical assumption that all models use the same output space (same target vocabulary), we need to use this during
 #  ensembling -- remember token / segment level ensembling ideas (token probability is mean of constituent subwords)
 # TODO: does model instance hold any state while decoding? I.e. is model's self.* holding any state while we are
 #  inside the decoding loop?
@@ -388,6 +388,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     """
 
     for state in component_states:
+
         state['outputs'] = outputs_from_state(state)
         state['next_token_logits'] = state['outputs'][0][:, -1, :]  # (batch_size * num_beams, vocab_size)
 
@@ -439,12 +440,22 @@ def ensembled_beam_search_step(component_states, ensemble_state):
         if state['model']._use_cache(state['outputs'], use_cache=True):
             state['past'] = state['outputs'][1]
 
+        # TODO: this is more complex than it seems b/c we need to keep track of all predictions for all beams for all timesteps for all states
+        # TODO: we don't know which final output is going to be chosen
+        # TODO init accumulation for the decoding timesteps for each state
+        #   (note may need to downscale -- i.e. topk only if becomes too big for memory)
+        # this accumulator gets initialized on the first timestep
+        #if not 'timestep_scores' in state:
+        #    state['timestep_scores'] = []
+        #state['timestep_scores'].append(state['scores'].clone())
+
     # CHRIS: WORKING HERE
     # - assume (and enforce) that component state input_ids are always the same as ensemble state's input_ids
     # - note potential complexity in re-ordering due to individual model's different encoder_outputs
 
     # TODO: now we have attached scores to every individual model's state, let's proceed to update the ensemble state
-    # TODO: note individual models should not need to care about beam search outside of the necessary reordering of inputs
+    # TODO: note individual models should not need to care about ensemble_state's beam search outside of the necessary
+    #  reordering of inputs
 
     # Chris: ok, now we have the scores from this (model, text) pair, let's return them and ensemble before
     #  continuing.
@@ -461,9 +472,11 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     #        dim=0
     #    )[None, :]
 
-    # TODO: just simple mean of logprobs as first try, later more sophisticated weighting
+    # just simple mean of logprobs as first try, later more sophisticated weighting
     # - TODO: inject reduce function with `torch.mean` as default
     ensemble_state['scores'] = torch.mean(torch.stack([s['scores'] for s in component_states]), dim=0)
+    # WORKING: understand how we can get the score of each chosen token in each beam for each component_state
+    import ipdb; ipdb.set_trace()
 
     # BEGIN: ways of selecting next token from scores
     if ensemble_state['do_sample']:
@@ -492,6 +505,9 @@ def ensembled_beam_search_step(component_states, ensemble_state):
         next_tokens = torch.gather(next_tokens, -1, next_scores_indices)  # (batch_size, num_beams * 2)
 
     else:
+        # TODO: here we also need to store the individual scores of all of the component models
+        #for component_state in component_states:
+        #    pass
         next_scores = ensemble_state['scores'] + ensemble_state['beam_scores'][:, None].expand_as(ensemble_state['scores'])  # (batch_size * num_beams, vocab_size)
 
         # re-organize to group the beam together (we are keeping top hypotheses across beams)
@@ -512,11 +528,11 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     assert next_scores.size() == next_tokens.size() == (ensemble_state['batch_size'], 2 * ensemble_state['num_beams'])
     # NEXT TOKEN CANDIDATES HAVE BEEN SELECTED
 
-    # BEGIN: UPDATING SEARCH STATE
+    # BEGIN: UPDATING SEARCH STATE(S)
     # next batch beam content
     next_batch_beam = []
 
-    # for each sentence (note if we are doing one multi-doc summary, batch_size is 1 for sure)
+    # for each input (note currently if we are doing one multi-doc summary, batch_size is 1 for sure)
     for batch_idx in range(ensemble_state['batch_size']):
 
         # if we are done with this sentence
@@ -582,16 +598,22 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     ensemble_state['beam_scores'] = ensemble_state['beam_scores'].new([x[0] for x in next_batch_beam])
 
     # re-order batch
+    # each next_batch_beam stores (beam_token_score, token_id, effective_beam_id)
     beam_tokens = ensemble_state['input_ids'].new([x[1] for x in next_batch_beam])
     beam_idx = ensemble_state['input_ids'].new([x[2] for x in next_batch_beam])
 
-    # TODO: possible bug land here
-    # TODO: WORKING: set input_ids, cur_len, past on all component states and on ensemble_state
+    # TODO: possible journey to bug land here
     for state in component_states:
         state['input_ids'] = ensemble_state['input_ids'][beam_idx, :]
         state['input_ids'] = torch.cat([ensemble_state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
 
+    # WORKING: support storing arbitrary metadata about each cell of each beam
+    # WORKING: ensemble_state['beam_metadata'] = (timesteps, beams, {}) -- list of timesteps, list of beams
+    #ensemble_state['beam_metadata'] = ensemble_state['beam_metadata'][beam_idx]
+
+    # reorder input_ids according to beam_idx
     ensemble_state['input_ids'] = ensemble_state['input_ids'][beam_idx, :]
+    # concat current timestep onto input_ids
     ensemble_state['input_ids'] = torch.cat([ensemble_state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
 
     # re-order internal states
