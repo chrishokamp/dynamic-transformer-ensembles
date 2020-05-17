@@ -476,7 +476,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     # - TODO: inject reduce function with `torch.mean` as default
     ensemble_state['scores'] = torch.mean(torch.stack([s['scores'] for s in component_states]), dim=0)
     # WORKING: understand how we can get the score of each chosen token in each beam for each component_state
-    import ipdb; ipdb.set_trace()
+    # at this timestep, each of the component_states has a score for each of the beams in each of the batch items
     print(f'component state score shapes:{[torch.Size([5, 50264]), torch.Size([5, 50264]), torch.Size([5, 50264])]}')
 
     # BEGIN: ways of selecting next token from scores
@@ -609,6 +609,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     # re-order batch
     # each next_batch_beam stores (beam_token_score, token_id, effective_beam_id)
     beam_tokens = ensemble_state['input_ids'].new([x[1] for x in next_batch_beam])
+    # this idx will be used to select the beams sequences to continue -- note the same sequence can be selected and continued in multiple ways
     beam_idx = ensemble_state['input_ids'].new([x[2] for x in next_batch_beam])
 
     # TODO: possible journey to bug land here
@@ -624,6 +625,17 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     ensemble_state['input_ids'] = ensemble_state['input_ids'][beam_idx, :]
     # concat current timestep onto input_ids
     ensemble_state['input_ids'] = torch.cat([ensemble_state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
+
+    import ipdb; ipdb.set_trace()
+    # reorder lists of decoding metadata
+    ensemble_state['decoding_stats'] = ensemble_state['decoding_stats'][beam_idx]
+
+    # concat on new metadata at this timestep
+    # WORKING: for component_state in component_states
+    # build metadata by indexing beam_tokens into each state
+    # TODO: assert that reduce function after indexing equals ensemble_state score for this item
+    # note beam_idx is ordering mapping between this timestep and previous timestep
+
 
     # re-order internal states
     # Note ensemble_state has no "past", this is only on component_states
