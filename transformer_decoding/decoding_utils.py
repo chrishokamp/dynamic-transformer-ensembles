@@ -1,4 +1,5 @@
 from collections import OrderedDict
+import copy
 
 import torch
 from torch.nn import functional as F
@@ -387,6 +388,12 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     Decoding hyperparams live in ensemble_state
     """
 
+    # TEMP: move this out of step function
+    if 'decoding_stats' not in ensemble_state:
+        ensemble_state['decoding_stats'] = []
+        for _ in range(len(component_states)):
+            ensemble_state['decoding_stats'].append([[] for _ in range(ensemble_state['num_beams'])])
+
     for state in component_states:
 
         state['outputs'] = outputs_from_state(state)
@@ -477,7 +484,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     ensemble_state['scores'] = torch.mean(torch.stack([s['scores'] for s in component_states]), dim=0)
     # WORKING: understand how we can get the score of each chosen token in each beam for each component_state
     # at this timestep, each of the component_states has a score for each of the beams in each of the batch items
-    print(f'component state score shapes:{[torch.Size([5, 50264]), torch.Size([5, 50264]), torch.Size([5, 50264])]}')
+    #print(f'component state score shapes:{[torch.Size([5, 50264]), torch.Size([5, 50264]), torch.Size([5, 50264])]}')
 
     # BEGIN: ways of selecting next token from scores
     if ensemble_state['do_sample']:
@@ -558,11 +565,11 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             beam_id = beam_token_id // ensemble_state['vocab_size']
             token_id = beam_token_id % ensemble_state['vocab_size']
 
-            print(f'batch_idx: {batch_idx}, beam_token_rank: {beam_token_rank}, beam_id: {beam_id}, token_id: {token_id}')
+            #print(f'batch_idx: {batch_idx}, beam_token_rank: {beam_token_rank}, beam_id: {beam_id}, token_id: {token_id}')
 
             effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
 
-            print(f'effective_beam_id: {effective_beam_id}')
+            #print(f'effective_beam_id: {effective_beam_id}')
 
             # add to generated hypotheses if end of sentence or last iteration
             if (ensemble_state['eos_token_id'] is not None) and (token_id.item() == ensemble_state['eos_token_id']):
@@ -627,10 +634,40 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     # concat current timestep onto input_ids
     ensemble_state['input_ids'] = torch.cat([ensemble_state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
 
-    import ipdb; ipdb.set_trace()
+    # TODO: WORKING HERE: storing metadata about component states
     # reorder lists of decoding metadata according to beam_idx
-    ensemble_state['decoding_stats'] = ensemble_state['decoding_stats'][beam_idx]
+    #ensemble_state['decoding_stats'] = ensemble_state['decoding_stats'][beam_idx]
+    for state_idx, component_state in enumerate(component_states):
 
+        # we need to know how the beams are internally reordered
+        # each next_batch_beam stores (beam_token_score, token_id, effective_beam_id)
+        # ensemble_state['beam_scores'] = ensemble_state['beam_scores'].new([x[0] for x in next_batch_beam])
+        # next_sent_beam.append((beam_token_score, token_id, effective_beam_id, beam_id))
+        # effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
+        
+        # TODO: store in flat semantics for now, deal with batches later since edge cases of BeamHypothsis not totally evident yet
+
+        # Note we don't need to store beam scores (accumulated scores) on component states since we can effectively force decode by summing logprobs at each timestep
+        state_scores = component_state['scores'][beam_idx, beam_tokens]
+
+        # reorder/replace existing state metadata
+        next_decoding_stats = []
+        for beam_id in beam_idx.cpu().numpy():
+            next_decoding_stats.append(copy.deepcopy(ensemble_state['decoding_stats'][state_idx][beam_id]))
+        
+        # concat new state metadata horizontally
+        state_metadata = [{'token': token.item(), 'score': score.item()} for token, score in zip(beam_tokens, state_scores)]
+        for beam_id in range(ensemble_state['num_beams']):
+            next_decoding_stats[beam_id].append(state_metadata[beam_id])
+
+        ensemble_state['decoding_stats'][state_idx] = next_decoding_stats
+        
+
+        # TODO: do we want the score up to this point, or the softmax output of just this timestep? -- double check this 
+        # WORKING: we know the stats are chunked per-batch in chunks of size ensemble_state[:num_beams], and we know the beams of all of the component states
+        #  are ordered the same way
+    #import ipdb; ipdb.set_trace()
+        
     # concat on new metadata at this timestep
     # WORKING: for component_state in component_states
     # build metadata by indexing beam_tokens into each state
