@@ -604,6 +604,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
 
     # Note we shouldn't need to deal with beam scores on the component_states
     # Chris: the score of each item is this timestep's score + previous beam score
+    # each next_batch_beam stores (beam_token_score, token_id, effective_beam_id)
     ensemble_state['beam_scores'] = ensemble_state['beam_scores'].new([x[0] for x in next_batch_beam])
 
     # re-order batch
@@ -627,7 +628,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     ensemble_state['input_ids'] = torch.cat([ensemble_state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
 
     import ipdb; ipdb.set_trace()
-    # reorder lists of decoding metadata
+    # reorder lists of decoding metadata according to beam_idx
     ensemble_state['decoding_stats'] = ensemble_state['decoding_stats'][beam_idx]
 
     # concat on new metadata at this timestep
