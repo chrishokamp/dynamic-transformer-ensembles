@@ -267,7 +267,12 @@ def summarize_articles(articles, args):
             effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
             final_score = ensemble_state['beam_scores'][effective_beam_id].item()
             final_tokens = ensemble_state['input_ids'][effective_beam_id]
-            ensemble_state['generated_hyps'][batch_idx].add(final_tokens, final_score)
+
+            hyp_metadata = []
+            for state_idx in range(len(ensemble_state['decoding_stats'])):
+                hyp_metadata.append(ensemble_state['decoding_stats'][effective_beam_id])
+
+            ensemble_state['generated_hyps'][batch_idx].add(final_tokens, final_score, metadata=hyp_metadata)
 
     #assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
     assert ensemble_state['batch_size'] == 1, 'current logic assumes batch size = 1'

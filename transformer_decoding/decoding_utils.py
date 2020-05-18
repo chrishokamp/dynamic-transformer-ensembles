@@ -31,6 +31,56 @@ def generate(component_states, timesteps, ensemble_state=None):
     return component_states, ensemble_state
 
 
+class BeamHypotheses(object):
+    def __init__(self, num_beams, max_length, length_penalty, early_stopping):
+        """
+        Initialize n-best list of hypotheses.
+        """
+        self.max_length = max_length - 1  # ignoring bos_token
+        self.length_penalty = length_penalty
+        self.early_stopping = early_stopping
+        self.num_beams = num_beams
+        self.beams = []
+        self.worst_score = 1e9
+
+    def __len__(self):
+        """
+        Number of hypotheses in the list.
+        """
+        return len(self.beams)
+
+    def add(self, hyp, sum_logprobs, metadata=None):
+        """
+        Add a new hypothesis to the list.
+        """
+        score = sum_logprobs / len(hyp) ** self.length_penalty
+        if len(self) < self.num_beams or score > self.worst_score:
+            self.beams.append((score, hyp, metadata))
+            if len(self) > self.num_beams:
+                sorted_scores = sorted([(s, idx) for idx, (s, _) in enumerate(self.beams)])
+                del self.beams[sorted_scores[0][1]]
+                self.worst_score = sorted_scores[1][0]
+            else:
+                self.worst_score = min(score, self.worst_score)
+
+    def is_done(self, best_sum_logprobs, cur_len=None):
+        """
+        If there are enough hypotheses and that none of the hypotheses being generated
+        can become better than the worst one in the heap, then we are done with this sentence.
+        """
+
+        if len(self) < self.num_beams:
+            return False
+        elif self.early_stopping:
+            return True
+        else:
+            if cur_len is None:
+                cur_len = self.max_length
+            cur_score = best_sum_logprobs / cur_len ** self.length_penalty
+            ret = self.worst_score >= cur_score
+            return ret
+
+
 def get_start_state(text, model, tokenizer, decoding_hyperparams):
 
     # set up state
@@ -49,7 +99,7 @@ def get_start_state(text, model, tokenizer, decoding_hyperparams):
     #  generated hypotheses -- this may move to
     #  `get_initial_decoding_state`
     decoder_state['generated_hyps'] = [
-        modeling_utils.BeamHypotheses(
+        BeamHypotheses(
             decoder_state['num_beams'],
             decoder_state['max_length'],
             decoder_state['length_penalty'],
@@ -581,8 +631,13 @@ def ensembled_beam_search_step(component_states, ensemble_state):
                 # TODO: also add metadata here
                 # TODO: we are storing metadata on ensemble_state['decoding_stats'][effective_beam_id] in the same way we're
                 #  updating ensemble_state['input_ids'] at each timestep
+                # WORKING: add metatdata for this beam_idx for all states
+                # metadata is ordered in the same way as component states
+                hyp_metadata = []
+                for state_idx in range(len(ensemble_state['decoding_stats'])):
+                    hyp_metadata.append(ensemble_state['decoding_stats'][effective_beam_id])
                 ensemble_state['generated_hyps'][batch_idx].add(
-                    ensemble_state['input_ids'][effective_beam_id].clone(), beam_token_score.item(),
+                    ensemble_state['input_ids'][effective_beam_id].clone(), beam_token_score.item(), metadata=hyp_metadata
                 )
             else:
                 # add next predicted token if it is not eos_token
@@ -645,7 +700,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
         # next_sent_beam.append((beam_token_score, token_id, effective_beam_id, beam_id))
         # effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
         
-        # TODO: store in flat semantics for now, deal with batches later since edge cases of BeamHypothsis not totally evident yet
+        # TODO: store in flat semantics for now, deal with batches later since edge cases of BeamHypothses not totally evident yet
 
         # Note we don't need to store beam scores (accumulated scores) on component states since we can effectively force decode by summing logprobs at each timestep
         state_scores = component_state['scores'][beam_idx, beam_tokens]
@@ -661,7 +716,6 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             next_decoding_stats[beam_id].append(state_metadata[beam_id])
 
         ensemble_state['decoding_stats'][state_idx] = next_decoding_stats
-        
 
         # TODO: do we want the score up to this point, or the softmax output of just this timestep? -- double check this 
         # WORKING: we know the stats are chunked per-batch in chunks of size ensemble_state[:num_beams], and we know the beams of all of the component states
