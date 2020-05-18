@@ -57,7 +57,7 @@ class BeamHypotheses(object):
         if len(self) < self.num_beams or score > self.worst_score:
             self.beams.append((score, hyp, metadata))
             if len(self) > self.num_beams:
-                sorted_scores = sorted([(s, idx) for idx, (s, _) in enumerate(self.beams)])
+                sorted_scores = sorted([(s, idx) for idx, (s, _, _) in enumerate(self.beams)])
                 del self.beams[sorted_scores[0][1]]
                 self.worst_score = sorted_scores[1][0]
             else:
@@ -635,7 +635,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
                 # metadata is ordered in the same way as component states
                 hyp_metadata = []
                 for state_idx in range(len(ensemble_state['decoding_stats'])):
-                    hyp_metadata.append(ensemble_state['decoding_stats'][effective_beam_id])
+                    hyp_metadata.append(ensemble_state['decoding_stats'][state_idx][effective_beam_id])
                 ensemble_state['generated_hyps'][batch_idx].add(
                     ensemble_state['input_ids'][effective_beam_id].clone(), beam_token_score.item(), metadata=hyp_metadata
                 )

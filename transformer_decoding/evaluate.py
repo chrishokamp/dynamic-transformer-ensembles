@@ -270,7 +270,7 @@ def summarize_articles(articles, args):
 
             hyp_metadata = []
             for state_idx in range(len(ensemble_state['decoding_stats'])):
-                hyp_metadata.append(ensemble_state['decoding_stats'][effective_beam_id])
+                hyp_metadata.append(ensemble_state['decoding_stats'][state_idx][effective_beam_id])
 
             ensemble_state['generated_hyps'][batch_idx].add(final_tokens, final_score, metadata=hyp_metadata)
 
@@ -278,7 +278,7 @@ def summarize_articles(articles, args):
     assert ensemble_state['batch_size'] == 1, 'current logic assumes batch size = 1'
 
     # sort hyps by score (0 index is first batch, and we're assuming batch_size always = 1 right now)
-    sorted_hyps = [(hyp, score) for score, hyp in sorted(ensemble_state['generated_hyps'][0].beams, key=lambda b: b[0], reverse=True)]
+    sorted_hyps = [(hyp, score, metadata) for score, hyp, metadata in sorted(ensemble_state['generated_hyps'][0].beams, key=lambda b: b[0], reverse=True)]
 
     print(f'Num hyps in BeamHypotheses: {len(sorted_hyps)}')
 
@@ -286,12 +286,9 @@ def summarize_articles(articles, args):
     predictions = [tokenizer.decode(hyp,
                                     skip_special_tokens=True,
                                     clean_up_tokenization_spaces=False)
-                   for hyp, _ in sorted_hyps]
+                   for hyp, _, _ in sorted_hyps]
 
-    import ipdb; ipdb.set_trace()
-
-    # TODO: currently `summaries` contains `beam_size` predictions, not sorted by score
-    return predictions
+    return predictions, sorted_hyps
 
 
 def article_to_text(article, separator_token=' '):
@@ -348,11 +345,33 @@ def main(args):
                 articles_ = [articles[0]]
             articles = articles_
 
-        predictions = summarize_articles(articles, args)
-        #print(f'Predictions: \n{predictions}')
-        #print()
-        #print(f'input_ids shape: {ensemble_state["input_ids"].shape}')
-        #print(f'Reference Summary:\n{cluster["summary"]}')
+        predictions, sorted_hyps = summarize_articles(articles, args)
+
+        # sorted_hyps -- (token_idxs, score, metadata)
+        # they're in sorted order according to ensemble score, so first one is the best        
+        # we will have one list of timestamp metadata for each input
+        # TODO: configurable / tunable length_penalty
+        hardcoded_length_penalty = 2
+        component_scores = []
+        for input_idx, state_metadata in enumerate(sorted_hyps[0][2]):
+            timestep_scores = np.array([o['score'] for o in state_metadata])
+            # TODO: global hyp score according to BeamHypotheses configuration
+            
+            global_score = np.sum(timestep_scores) / len(timestep_scores) ** hardcoded_length_penalty
+            component_scores.append(global_score)
+        component_scores = np.array(component_scores)
+        for idx in np.argsort(component_scores)[::-1]:
+            print(f'ARTICLE: {articles[idx][:200]}')
+            print(f'Input {idx} score: {component_scores[idx]}')
+            print()
+        
+        print(f'Ensemble score: {sorted_hyps[0][1]}')
+        print(f'Gold: {cluster["summary"]}')
+        print(f'Predicted: {predictions[0]}')
+        print()
+        
+        #tok_ids = [o['token'] for o in sorted_hyps[0][2][0]] 
+        #print(args['tokenizer'].decode(tok_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False))
 
         # NOTE: hack to just take the first one right now, disregarding scores of different beam items
         predicted_summary = predictions[0]
