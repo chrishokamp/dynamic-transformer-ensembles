@@ -26,6 +26,9 @@ from newsroom.analyze.rouge import ROUGE_L, ROUGE_N
 logger = log.create_logger(__name__)
 
 
+np.random.seed(42)
+
+
 # BEGIN: utils for Lebanoff 2018 rouge
 def make_html_safe(s):
     """Replace any angled brackets in string s to avoid interfering with HTML attention visualizer."""
@@ -331,14 +334,21 @@ def main(args):
         raise AssertionError('Right now we only know how to handle .jsonl evaluation datasets')
 
     # WORKING: also write out summaries as they're generated
-    preds_output = open('eval_predicted_summaries.out', 'w', buffering=1)
-    gold_output = open('eval_gold_summaries.out', 'w', buffering=1)
+    eval_prefix = args['eval_prefix']
+    preds_output = open(f'{eval_prefix}eval_predicted_summaries.out', 'w', buffering=1)
+    gold_output = open(f'{eval_prefix}eval_gold_summaries.out', 'w', buffering=1)
+    metadata_output = open(f'{eval_prefix}decoding_metadata.jsonl', 'w', buffering=1)
 
     summaries = []
     # get summary for each cluster
     # note here we have a macro-batch size of one cluster by definition
+
     for cluster in tqdm.tqdm(dataset):
-        articles = [article_to_text(a) for a in cluster['articles'][:args['max_articles_in_cluster']]]
+        # shuffle articles before selecting topk to use in ensemble
+        articles = [article_to_text(a) for a in cluster['articles']]
+        np.random.shuffle(articles)
+        articles = articles[:args['max_articles_in_cluster']]
+
         if args['min_input_char_length'] is not None:
             articles_ = [a for a in articles if len(a) >= args['min_input_char_length']]
             if len(articles_) == 0:
@@ -350,15 +360,15 @@ def main(args):
         # sorted_hyps -- (token_idxs, score, metadata)
         # they're in sorted order according to ensemble score, so first one is the best        
         # we will have one list of timestamp metadata for each input
-        # TODO: configurable / tunable length_penalty
-        hardcoded_length_penalty = 2
+        length_penalty = args['length_penalty']
         component_scores = []
         for input_idx, state_metadata in enumerate(sorted_hyps[0][2]):
+
             timestep_scores = np.array([o['score'] for o in state_metadata])
-            # TODO: global hyp score according to BeamHypotheses configuration
             
-            global_score = np.sum(timestep_scores) / len(timestep_scores) ** hardcoded_length_penalty
+            global_score = np.sum(timestep_scores) / len(timestep_scores) ** length_penalty
             component_scores.append(global_score)
+            
         component_scores = np.array(component_scores)
         for idx in np.argsort(component_scores)[::-1]:
             print(f'ARTICLE: {articles[idx][:200]}')
@@ -369,16 +379,35 @@ def main(args):
         print(f'Gold: {cluster["summary"]}')
         print(f'Predicted: {predictions[0]}')
         print()
+        #import ipdb; ipdb.set_trace()
         
         #tok_ids = [o['token'] for o in sorted_hyps[0][2][0]] 
         #print(args['tokenizer'].decode(tok_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False))
 
         # NOTE: hack to just take the first one right now, disregarding scores of different beam items
         predicted_summary = predictions[0]
-        gold_summary = cluster['summary']
+        gold_summary = cluster['summary'].strip()
         summaries.append((predicted_summary, gold_summary))
         preds_output.write(f'{predicted_summary}\n')
         gold_output.write(f'{gold_summary}\n')
+
+        # TODO: need to map some stuff to put in json?
+        sorted_hyps_ = []
+        for tok_idxs, score, tok_scores in sorted_hyps:
+            tok_idxs = [int(idx) for idx in tok_idxs.cpu().numpy()]
+            sorted_hyps_.append((tok_idxs, score, tok_scores))
+        sorted_hyps = sorted_hyps_
+
+        metadata_output.write(
+            json.dumps(
+                {
+                   'cluster': cluster,
+                   'predictions': predictions,
+                   'inputs_used': articles,
+                   'component_scores': list(component_scores),
+                   'decoding_metadata': sorted_hyps
+                })
+            + '\n') 
 
     preds_output.close()
     gold_output.close()
@@ -420,6 +449,13 @@ def parse_args():
         help='number of beam search beams'
     )
     parser.add_argument(
+        '--length-penalty',
+        type=float,
+        required=False,
+        default=2.,
+        help='length penalty to use when computing final hypothesis scores'
+    )
+    parser.add_argument(
         '--min-input-char-length',
         type=int,
         required=False,
@@ -454,6 +490,17 @@ def parse_args():
         default=None,
         help='if provided, truncate eval dataset to this many rows'
     )
+    parser.add_argument(
+        '--eval-prefix',
+        type=str,
+        required=False,
+        default='',
+        help='If provided, prefix of output files'
+    )
+    
+    # WORKING: add eval paths for Ghalandari et al 2020 and Lebanoff et al 2018
+    # WORKING: add eval from file paths (not just integrated evaluation
+
     return parser.parse_args()
 
 
