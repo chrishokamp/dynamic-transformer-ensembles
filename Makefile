@@ -1,20 +1,4 @@
-# Aylien entities Makefile
-
-# Container
-#REGISTRY      := gcr.io/aylien-production
-#CONTAINER     :=
-#VERSION       := `cat VERSION`
-
-## Resources
-#RESOURCES_ROOT    := gs://aylien-science-files/dynamic-ensembles
-#RESOURCES_VERSION ?= 1
-
-#TEST_RESOURCES_VERSION ?= test
-
-# WCEP dataset location
-# gs://aylien-science-datasets/summarization/MultiNews/
-# gs://aylien-science-datasets/summarization/WCEP/
-# gsutil cp -r gs://aylien-science-datasets/summarization/WCEP
+# Dynamic Ensembling Makefile
 
 # FINE-TUNING (Training BART with in-domain data)
 # summarization datadir (TODO: format of this data?)
@@ -39,7 +23,13 @@ RUN_FLAGS    ?=
 ###########
 ## TASKS ##
 ###########
-#evaluate: resources/$(RESOURCES_VERSION)
+.PHONY: predict
+evaluate:
+	python transformer_decoding/evaluate.py \
+		--evaluation-dataset $(EVALUATION_DATASET) \
+		--model-id $(MODEL_ID) \
+		$(RUN_FLAGS)
+
 .PHONY: evaluate
 evaluate:
 	python transformer_decoding/evaluate.py \
@@ -81,10 +71,6 @@ fine-tune-bart:
 resources/$(TEST_RESOURCES_VERSION):
 	mkdir -p ./resources
 	gsutil cp -r $(RESOURCES_ROOT)/$(TEST_RESOURCES_VERSION) ./resources
-
-resources/$(RESOURCES_VERSION):
-	mkdir -p ./resources
-	gsutil cp -r $(RESOURCES_ROOT)/$(RESOURCES_VERSION) ./resources
 
 .PHONY: test
 test: resources/$(TEST_RESOURCES_VERSION)
