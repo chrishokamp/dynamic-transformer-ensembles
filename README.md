@@ -1,9 +1,14 @@
-#### fine-tuning on multi-doc summarization datasets
+## DynE: Dynamic Ensemble Decoding for Multi-Document Summarization
 
 
-##### Installation
+## :star: Complete README coming soon :star:
 
-##### Preparing a dataset
+
+### Installation
+
+
+
+### Preparing a dataset
 
 (1) flatten dataset (currently see notebooks) to cnn-dm *.sources and *.targets format
 (2) run `bin/run_train.sh`
@@ -21,14 +26,13 @@ MultiNews
 DUC2004
 
 ```
-
-##### Fine-tuning
+### Fine-tuning 
 
 
 #### Fine-Tuned Model Checkpoints
 
 
-#### Evaluation
+### Evaluation
 ```
 
 ```
