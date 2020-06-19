@@ -4,6 +4,7 @@ from pathlib import Path
 import tqdm
 import os
 import shutil
+import time
 from _collections import defaultdict
 
 import numpy as np
@@ -45,7 +46,6 @@ def make_html_safe(s):
 def rouge_eval(ref_dir, dec_dir):
     """Evaluate the files in ref_dir and dec_dir with pyrouge, returning results_dict"""
     r = pyrouge.Rouge155()
-    #   r.model_filename_pattern = '#ID#_reference.txt'
     r.model_filename_pattern = '#ID#_reference.[A-Z].txt'
     r.system_filename_pattern = '(\d+)_decoded.txt'
     r.model_dir = ref_dir
@@ -214,8 +214,6 @@ def rouge_results_to_str(results_dict):
         results_dict["rouge_l_f_score"] * 100,
         results_dict["rouge_su*_f_score"] * 100)
 
-
-
 # END: utils for Fabbri 2019 rouge
 
 
@@ -231,7 +229,13 @@ def print_mean(results, rouge_types):
 
 
 def evaluate_rouge(hyps, refs, lowercase=True):
-    # WORKING: get summary, append (or eval online)
+    if type(hyps) is str:
+        hyps = [l.strip() for l in open(hyps)]
+    if type(refs) is str:
+        assert refs.endswith('.jsonl'), 'reference summaries must be stored in "summaries": [] field of .jsonl file'
+        refs = [json.loads(c)['summary'].strip() for c in open(refs['evaluation_dataset'])]
+
+    assert len(hyps) == len(refs)
     # Now evaluate
     rouge_types = ['rouge-1', 'rouge-2', 'rouge-l']
     results = dict((rouge_type, defaultdict(list))
@@ -297,26 +301,12 @@ def summarize_articles(articles, args):
         decoding_utils.generate(component_states, decoding_hyperparams['max_tgt_length'],
                                 ensemble_state=ensemble_state)
 
-
-    # WORKING HERE: make sure predictions are sorted by score
     # TODO: this logic might move to end of `generate` function(?)
     # finalize all open beam hypotheses and end to generated hypotheses
     for batch_idx in range(ensemble_state['batch_size']):
         if ensemble_state['done'][batch_idx]:
             continue
 
-        # test that beam scores match previously calculated scores if not eos and batch_idx not done
-        # Chris: TODO: we don't currently store `next_tokens` on state at each decoding step
-        #if ensemble_state['eos_token_id'] is not None and all(
-        #        (token_id % ensemble_state['vocab_size']).item() is not ensemble_state['eos_token_id'] for token_id in ensemble_state['next_tokens'][batch_idx]
-        #):
-        #    assert torch.all(
-        #        ensemble_state['next_scores'][batch_idx, :ensemble_state['num_beams']] == ensemble_state['beam_scores'].view(ensemble_state['batch_size'], ensemble_state['num_beams'])[batch_idx]
-        #    ), "If batch_idx is not done, final next scores: {} have to equal to accumulated beam_scores: {}".format(
-        #        ensemble_state['next_scores'][:, :ensemble_state['num_beams']][batch_idx], ensemble_state['beam_scores'].view(ensemble_state['batch_size'], ensemble_state['num_beams'])[batch_idx],
-        #    )
-
-        # TODO: finished hyps (those that are `done`) should already be in `generated_hyps`, assert this is the case
         # need to add best num_beams hypotheses to generated hyps
         for beam_id in range(ensemble_state['num_beams']):
             effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
@@ -329,7 +319,6 @@ def summarize_articles(articles, args):
 
             ensemble_state['generated_hyps'][batch_idx].add(final_tokens, final_score, metadata=hyp_metadata)
 
-    #assert len(ensemble_state['input_ids']) == 1, 'We currently have batch size=1 (we decode one cluster at a time)'
     assert ensemble_state['batch_size'] == 1, 'current logic assumes batch size = 1'
 
     # sort hyps by score (0 index is first batch, and we're assuming batch_size always = 1 right now)
@@ -355,137 +344,140 @@ def article_to_text(article, separator_token=' '):
 
 def main(args):
 
-    # load pretrained or finetuned transformer model
-    print(f'loading pre-trained model: {args["model_id"]}')
-
-    # we have to load fine-tuned models in a different way because of pytorch-lightning
-    # fine-tuned
-    if args['model_id'].endswith('.ckpt'):
-    	from transformer_decoding.finetune import SummarizationTrainer
-    	lightning_model = SummarizationTrainer.load_from_checkpoint(args['model_id'])
-    	args['model'] = lightning_model.model
-    	args['tokenizer'] = lightning_model.tokenizer
-    else:
-        # transformers pretrained
-        args['model'] = BartForConditionalGeneration.from_pretrained(args['model_id'])
-        args['tokenizer'] = BartTokenizer.from_pretrained(args['model_id'])
-
-    # Set the model in evaluation mode to deactivate the DropOut modules
-    # This is IMPORTANT to have reproducible results during evaluation!
-    args['model'].eval()
-
-    if torch.cuda.is_available():
-        args['model'].to('cuda')
-
-    # summarize MDS / summarization dataset with model
-
-    # print and write out evaluation results
     if args['evaluation_dataset'].endswith('.jsonl'):
         dataset = [json.loads(l) for l in open(args['evaluation_dataset'])][:args['rows_to_eval']]
     else:
         raise AssertionError('Right now we only know how to handle .jsonl evaluation datasets')
 
-    # WORKING: also write out summaries as they're generated
     eval_prefix = args['eval_prefix']
-    preds_output = open(f'{eval_prefix}eval_predicted_summaries.out', 'w', buffering=1)
-    gold_output = open(f'{eval_prefix}eval_gold_summaries.out', 'w', buffering=1)
-    metadata_output = open(f'{eval_prefix}decoding_metadata.jsonl', 'w', buffering=1)
 
-    summaries = []
-    # get summary for each cluster
-    # note here we have a macro-batch size of one cluster by definition
+    if args['predictions'] is None:
+        # load pretrained or finetuned transformer model
+        print(f'loading pre-trained model: {args["model_id"]}')
 
-    for cluster in tqdm.tqdm(dataset):
-        # shuffle articles before selecting topk to use in ensemble
-        articles = [article_to_text(a) for a in cluster['articles']]
-        np.random.shuffle(articles)
-        articles = articles[:args['max_articles_in_cluster']]
+        # we have to load fine-tuned models in a different way because of pytorch-lightning
+        if args['model_id'].endswith('.ckpt'):
+            from transformer_decoding.finetune import SummarizationTrainer
+            lightning_model = SummarizationTrainer.load_from_checkpoint(args['model_id'])
+            args['model'] = lightning_model.model
+            args['tokenizer'] = lightning_model.tokenizer
+        else:
+            # transformers pretrained
+            args['model'] = BartForConditionalGeneration.from_pretrained(args['model_id'])
+            args['tokenizer'] = BartTokenizer.from_pretrained(args['model_id'])
 
-        if args['min_input_char_length'] is not None:
-            articles_ = [a for a in articles if len(a) >= args['min_input_char_length']]
-            if len(articles_) == 0:
-                articles_ = [articles[0]]
-            articles = articles_
+        # Set the model in evaluation mode to deactivate the DropOut modules
+        args['model'].eval()
 
-        predictions, sorted_hyps = summarize_articles(articles, args)
+        if torch.cuda.is_available():
+            args['model'].to('cuda')
 
-        # sorted_hyps -- (token_idxs, score, metadata)
-        # they're in sorted order according to ensemble score, so first one is the best        
-        # we will have one list of timestamp metadata for each input
-        length_penalty = args['length_penalty']
-        component_scores = []
-        for input_idx, state_metadata in enumerate(sorted_hyps[0][2]):
+        # summarize MDS / summarization dataset with model
+        preds_output = open(f'{eval_prefix}eval_predicted_summaries.out', 'w', buffering=1)
+        gold_output = open(f'{eval_prefix}eval_gold_summaries.out', 'w', buffering=1)
+        metadata_output = open(f'{eval_prefix}decoding_metadata.jsonl', 'w', buffering=1)
 
-            timestep_scores = np.array([o['score'] for o in state_metadata])
-            
-            global_score = np.sum(timestep_scores) / len(timestep_scores) ** length_penalty
-            component_scores.append(global_score)
-            
-        component_scores = np.array(component_scores)
-        for idx in np.argsort(component_scores)[::-1]:
-            print(f'ARTICLE: {articles[idx][:200]}')
-            print(f'Input {idx} score: {component_scores[idx]}')
+        summaries = []
+        # get summary for each cluster
+        # note here we have a macro-batch size of one cluster by definition
+        for cluster in tqdm.tqdm(dataset):
+            # shuffle articles before selecting topk to use in ensemble
+            articles = [article_to_text(a) for a in cluster['articles']]
+            np.random.shuffle(articles)
+            articles = articles[:args['max_articles_in_cluster']]
+
+            if args['min_input_char_length'] is not None:
+                articles_ = [a for a in articles if len(a) >= args['min_input_char_length']]
+                if len(articles_) == 0:
+                    articles_ = [articles[0]]
+                articles = articles_
+
+            predictions, sorted_hyps = summarize_articles(articles, args)
+            # sorted_hyps -- (token_idxs, score, metadata)
+            # they're in sorted order according to ensemble score, so first one is the best
+            # we will have one list of timestamp metadata for each cluster input
+            length_penalty = args['length_penalty']
+            component_scores = []
+            for input_idx, state_metadata in enumerate(sorted_hyps[0][2]):
+
+                timestep_scores = np.array([o['score'] for o in state_metadata])
+
+                global_score = np.sum(timestep_scores) / len(timestep_scores) ** length_penalty
+                component_scores.append(global_score)
+
+            component_scores = np.array(component_scores)
+            for idx in np.argsort(component_scores)[::-1]:
+                print(f'ARTICLE: {articles[idx][:200]}')
+                print(f'Input {idx} score: {component_scores[idx]}')
+                print()
+
+            print(f'Ensemble score: {sorted_hyps[0][1]}')
+            print(f'Gold: {cluster["summary"]}')
+            print(f'Predicted: {predictions[0]}')
             print()
-        
-        print(f'Ensemble score: {sorted_hyps[0][1]}')
-        print(f'Gold: {cluster["summary"]}')
-        print(f'Predicted: {predictions[0]}')
-        print()
-        #import ipdb; ipdb.set_trace()
-        
-        #tok_ids = [o['token'] for o in sorted_hyps[0][2][0]] 
-        #print(args['tokenizer'].decode(tok_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False))
 
-        # NOTE: hack to just take the first one right now, disregarding scores of different beam items
-        predicted_summary = predictions[0]
-        gold_summary = cluster['summary'].strip()
-        summaries.append((predicted_summary, gold_summary))
-        preds_output.write(f'{predicted_summary}\n')
-        gold_output.write(f'{gold_summary}\n')
+            predicted_summary = predictions[0]
+            gold_summary = cluster['summary'].strip()
+            summaries.append((predicted_summary, gold_summary))
+            preds_output.write(f'{predicted_summary}\n')
+            gold_output.write(f'{gold_summary}\n')
 
-        # TODO: need to map some stuff to put in json?
-        sorted_hyps_ = []
-        for tok_idxs, score, tok_scores in sorted_hyps:
-            tok_idxs = [int(idx) for idx in tok_idxs.cpu().numpy()]
-            sorted_hyps_.append((tok_idxs, score, tok_scores))
-        sorted_hyps = sorted_hyps_
+            sorted_hyps_ = []
+            for tok_idxs, score, tok_scores in sorted_hyps:
+                tok_idxs = [int(idx) for idx in tok_idxs.cpu().numpy()]
+                sorted_hyps_.append((tok_idxs, score, tok_scores))
+            sorted_hyps = sorted_hyps_
 
-        metadata_output.write(
-            json.dumps(
-                {
-                   'cluster': cluster,
-                   'predictions': predictions,
-                   'inputs_used': articles,
-                   'component_scores': list(component_scores),
-                   'decoding_metadata': sorted_hyps
-                })
-            + '\n') 
+            metadata_output.write(
+                json.dumps(
+                    {
+                       'cluster': cluster,
+                       'predictions': predictions,
+                       'inputs_used': articles,
+                       'component_scores': list(component_scores),
+                       'decoding_metadata': sorted_hyps
+                    })
+                + '\n')
 
-    preds_output.close()
-    gold_output.close()
+        preds_output.close()
+        gold_output.close()
 
-    # Evaluation
-    hyps, refs = zip(*summaries)
+        # Evaluation
+        hyps, refs = zip(*summaries)
+    else:
+        # Evaluate on user-supplied predictions
+        logger.info(f'Evaluating predictions in {args["predictions"]} '
+                    f'against gold summaries in {args["evaluation_dataset"]}')
+        hyps = [l.strip() for l in open(args['predictions'])]
+        # Note this is only single-reference currently
+        refs = [json.loads(c)['summary'].strip() for c in open(args['evaluation_dataset'])]
+        assert len(hyps) == len(refs)
+
+        # TODO: working -- issue with multi vs single ref setups
+        #  - Lebanoff eval requires tokenized predictions -- see what we can do to consolidate evals
+
+    # Ghalandari et al 2020 evaluation
+    # TODO: print evaluation results to file
     results, rouge_types = evaluate_rouge(hyps, refs)
-
     print_mean(results, rouge_types)
+
     # End evaluation
 
 
-# TODO: one arg set for evaluation on files, one for predicting, writing files, and evaluating with model
 def parse_args():
     parser = argparse.ArgumentParser()
-    #parser.add_argument(
-    #    '--resource-path',
-    #    type=str,
-    #    required=True,
-    #    help='path to resources'
-    #)
     parser.add_argument(
         '--evaluation-dataset',
         type=str,
         required=True,
         help='filepath of evaluation data'
+    )
+    parser.add_argument(
+        '--predictions',
+        type=str,
+        required=False,
+        default=None,
+        help='if supplied, evaluation will be done on this output, and new predictions will not be generated'
     )
     parser.add_argument(
         '--model-id',
@@ -550,9 +542,6 @@ def parse_args():
         help='If provided, prefix of output files'
     )
     
-    # WORKING: add eval paths for Ghalandari et al 2020 and Lebanoff et al 2018
-    # WORKING: add eval from file paths (not just integrated evaluation
-
     return parser.parse_args()
 
 
