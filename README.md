@@ -45,6 +45,8 @@ RUN_FLAGS='--predictions outputs/wcep/wcep_5_articles_eval_predicted_summaries.o
 make evaluate
 ```
 
+### Citing
+
 If you use ideas or code from this project, please cite:
 ```
 @article{DynamicEnsembles,

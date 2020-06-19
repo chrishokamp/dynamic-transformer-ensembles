@@ -94,9 +94,7 @@ def get_start_state(text, model, tokenizer, decoding_hyperparams):
     if torch.cuda.is_available():
         decoder_state['input_ids'] = decoder_state['input_ids'].to('cuda')
 
-    # TODO: clarify interfaces
-    #  still don't know whether to use BeamHypotheses or not
-    #  generated hypotheses -- this may move to
+    #  TODO: this logic may move to
     #  `get_initial_decoding_state`
     decoder_state['generated_hyps'] = [
         BeamHypotheses(
@@ -363,13 +361,6 @@ def initialize_generation(
     ])
 
 
-# TODO: remember critical assumption that all models use the same output space (same target vocabulary), we need to use this during
-#  ensembling -- remember token / segment level ensembling ideas (token probability is mean of constituent subwords)
-# TODO: does model instance hold any state while decoding? I.e. is model's self.* holding any state while we are
-#  inside the decoding loop?
-# TODO: remove decoding length arg
-
-# WORKING: wrap tokenizer and model together so that we can pass through (text, tokenizer, model)
 def get_initial_decoding_state(text, model, tokenizer, decoding_hyperparams):
     """
     Get the state needed to start decoding from an instance
@@ -393,7 +384,6 @@ def outputs_from_state(state):
     """
     Run forward pass using a state, note this only works for states with a 'model' attribute
     """
-    # TODO: understand exact effect of use_cache (added in transformers master)
     model_inputs = state['model'].prepare_inputs_for_generation(
         state['input_ids'],
         past=state['past'],
@@ -492,56 +482,17 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             state['scores'].shape, (ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size'])
         )
 
-        # TODO: put this side-effect somewhere reasonable
         # if model has past, then set the past variable to speed up decoding
         if state['model']._use_cache(state['outputs'], use_cache=True):
             state['past'] = state['outputs'][1]
 
-        # TODO: this is more complex than it seems b/c we need to keep track of all predictions for all beams for all timesteps for all states
-        # TODO: we don't know which final output is going to be chosen
-        # TODO init accumulation for the decoding timesteps for each state
-        #   (note may need to downscale -- i.e. topk only if becomes too big for memory)
-        # this accumulator gets initialized on the first timestep
-        #if not 'timestep_scores' in state:
-        #    state['timestep_scores'] = []
-        #state['timestep_scores'].append(state['scores'].clone())
-
-    # CHRIS: WORKING HERE
-    # - assume (and enforce) that component state input_ids are always the same as ensemble state's input_ids
-    # - note potential complexity in re-ordering due to individual model's different encoder_outputs
-
-    # TODO: now we have attached scores to every individual model's state, let's proceed to update the ensemble state
-    # TODO: note individual models should not need to care about ensemble_state's beam search outside of the necessary
-    #  reordering of inputs
-
-    # Chris: ok, now we have the scores from this (model, text) pair, let's return them and ensemble before
-    #  continuing.
-    # Chris: let's create a wrapper that holds pairs of model, text
-    # Chris: let's create a new type of hypothesis which stores additional metadata in the beam
-    # Chris: same structure as beam, but stores arbitrary meta-data in each cell -- WORKING: what is the "timestamp metatdata?"
-
-    # TODO: now call the reduce function over all state['scores'], this will give us ensemble_state['scores']
-    # REDUCE SCORES AND SET ONTO ENSEMBLE STATE
-    # from old implementation:
-    #ensembled_log_probs = \
-    #    torch.mean(
-    #        timestep_weights[:, None] * torch.squeeze(torch.stack(cohort_log_probs)),
-    #        dim=0
-    #    )[None, :]
-
     # just simple mean of logprobs as first try, later more sophisticated weighting
     # - TODO: inject reduce function with `torch.mean` as default
     ensemble_state['scores'] = torch.mean(torch.stack([s['scores'] for s in component_states]), dim=0)
-    # WORKING: understand how we can get the score of each chosen token in each beam for each component_state
-    # at this timestep, each of the component_states has a score for each of the beams in each of the batch items
-    #print(f'component state score shapes:{[torch.Size([5, 50264]), torch.Size([5, 50264]), torch.Size([5, 50264])]}')
 
     # BEGIN: ways of selecting next token from scores
     if ensemble_state['do_sample']:
-        # TEMP
-        pass
-        # END TEMP
-
+        raise AssertionError('sampling currently not supported')
         _scores = scores + state['beam_scores'][:, None].expand_as(scores)  # (batch_size * num_beams, vocab_size)
         # Top-p/top-k filtering
         # Chris: note hard-coded `min_tokens_to_keep`
@@ -563,9 +514,6 @@ def ensembled_beam_search_step(component_states, ensemble_state):
         next_tokens = torch.gather(next_tokens, -1, next_scores_indices)  # (batch_size, num_beams * 2)
 
     else:
-        # TODO: here we also need to store the individual scores of all of the component models
-        #for component_state in component_states:
-        #    pass
         next_scores = ensemble_state['scores'] + ensemble_state['beam_scores'][:, None].expand_as(ensemble_state['scores'])  # (batch_size * num_beams, vocab_size)
 
         # re-organize to group the beam together (we are keeping top hypotheses across beams)
@@ -615,11 +563,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             beam_id = beam_token_id // ensemble_state['vocab_size']
             token_id = beam_token_id % ensemble_state['vocab_size']
 
-            #print(f'batch_idx: {batch_idx}, beam_token_rank: {beam_token_rank}, beam_id: {beam_id}, token_id: {token_id}')
-
             effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
-
-            #print(f'effective_beam_id: {effective_beam_id}')
 
             # add to generated hypotheses if end of sentence or last iteration
             if (ensemble_state['eos_token_id'] is not None) and (token_id.item() == ensemble_state['eos_token_id']):
@@ -628,10 +572,9 @@ def ensembled_beam_search_step(component_states, ensemble_state):
                 if is_beam_token_worse_than_top_num_beams:
                     continue
                 # update beam hypotheses obj with finished hypothesis and score
-                # TODO: also add metadata here
-                # TODO: we are storing metadata on ensemble_state['decoding_stats'][effective_beam_id] in the same way we're
+                # we are storing metadata on ensemble_state['decoding_stats'][effective_beam_id] in the same way we're
                 #  updating ensemble_state['input_ids'] at each timestep
-                # WORKING: add metatdata for this beam_idx for all states
+                # add metatdata for this beam_idx for all states
                 # metadata is ordered in the same way as component states
                 hyp_metadata = []
                 for state_idx in range(len(ensemble_state['decoding_stats'])):
@@ -675,33 +618,19 @@ def ensembled_beam_search_step(component_states, ensemble_state):
     # this idx will be used to select the beams sequences to continue -- note the same sequence can be selected and continued in multiple ways
     beam_idx = ensemble_state['input_ids'].new([x[2] for x in next_batch_beam])
 
-    # TODO: possible journey to bug land here
     for state in component_states:
         state['input_ids'] = ensemble_state['input_ids'][beam_idx, :]
         state['input_ids'] = torch.cat([ensemble_state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
-
-    # WORKING: support storing arbitrary metadata about each cell of each beam
-    # WORKING: ensemble_state['beam_metadata'] = (timesteps, beams, {}) -- list of timesteps, list of beams
-    #ensemble_state['beam_metadata'] = ensemble_state['beam_metadata'][beam_idx]
 
     # reorder input_ids according to beam_idx
     ensemble_state['input_ids'] = ensemble_state['input_ids'][beam_idx, :]
     # concat current timestep onto input_ids
     ensemble_state['input_ids'] = torch.cat([ensemble_state['input_ids'], beam_tokens.unsqueeze(1)], dim=-1)
 
-    # TODO: WORKING HERE: storing metadata about component states
     # reorder lists of decoding metadata according to beam_idx
     #ensemble_state['decoding_stats'] = ensemble_state['decoding_stats'][beam_idx]
     for state_idx, component_state in enumerate(component_states):
-
-        # we need to know how the beams are internally reordered
-        # each next_batch_beam stores (beam_token_score, token_id, effective_beam_id)
-        # ensemble_state['beam_scores'] = ensemble_state['beam_scores'].new([x[0] for x in next_batch_beam])
-        # next_sent_beam.append((beam_token_score, token_id, effective_beam_id, beam_id))
-        # effective_beam_id = batch_idx * ensemble_state['num_beams'] + beam_id
-        
         # TODO: store in flat semantics for now, deal with batches later since edge cases of BeamHypothses not totally evident yet
-
         # Note we don't need to store beam scores (accumulated scores) on component states since we can effectively force decode by summing logprobs at each timestep
         state_scores = component_state['scores'][beam_idx, beam_tokens]
 
@@ -716,18 +645,7 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             next_decoding_stats[beam_id].append(state_metadata[beam_id])
 
         ensemble_state['decoding_stats'][state_idx] = next_decoding_stats
-
-        # TODO: do we want the score up to this point, or the softmax output of just this timestep? -- double check this 
-        # WORKING: we know the stats are chunked per-batch in chunks of size ensemble_state[:num_beams], and we know the beams of all of the component states
-        #  are ordered the same way
-    #import ipdb; ipdb.set_trace()
-        
-    # concat on new metadata at this timestep
-    # WORKING: for component_state in component_states
-    # build metadata by indexing beam_tokens into each state
-    # TODO: assert that reduce function after indexing equals ensemble_state score for this item
-    # note beam_idx is ordering mapping between this timestep and previous timestep
-
+        # TODO: do we want the score up to this point, or the softmax output of just this timestep? -- double check this
 
     # re-order internal states
     # Note ensemble_state has no "past", this is only on component_states
@@ -766,7 +684,7 @@ def beam_search_step(state):
     if state['model']._do_output_past(outputs):
         state['past'] = outputs[1]
 
-    # TODO: Chris working: some heuristics are applied in-place to logits, others to scores
+    # some heuristics are applied in-place to logits, others to scores
     # repetition penalty (from CTRL paper https://arxiv.org/abs/1909.05858)
     if state['repetition_penalty'] != 1.0:
         state['model'].enforce_repetition_penalty_(
@@ -819,12 +737,6 @@ def beam_search_step(state):
         state['batch_size'] * state['num_beams'], state['vocab_size']), "Shapes of scores: {} != {}".format(
         scores.shape, (state['batch_size'] * state['num_beams'], state['vocab_size'])
     )
-
-    # Chris: ok, now we have the scores from this (model, text) pair, let's return them and ensemble before
-    #  continuing.
-    # Chris: let's create a wrapper that holds pairs of model, text
-    # Chris: let's create a new type of hypothesis which stores additional metadata in the beam
-    # Chris: same structure as beam, but stores arbitrary meta-data in each cell -- WORKING: what is the "timestamp metatdata?"
 
     # BEGIN: ways of selecting next token from scores
     if state['do_sample']:
@@ -1028,10 +940,8 @@ def greedy_step(state):
         next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
     else:
         # Greedy decoding
-        # Chris: TODO: note for ensembling all next token logic needs to move outside of this function
         next_token = torch.argmax(next_token_logits, dim=-1)
 
-    # Chris: TODO: update unfinished_sents in state
     # update generations and finished sentences
     if state['eos_token_id'] is not None:
         # pad finished sentences if eos_token_id exist
@@ -1041,7 +951,6 @@ def greedy_step(state):
         tokens_to_add = next_token
 
     # Chris: concat whatever was generated to input ids
-    # Chris: TODO: this must happen outside of individual model's step functions
     state['input_ids'] = torch.cat([state['input_ids'], tokens_to_add.unsqueeze(-1)], dim=-1)
 
     if state['eos_token_id'] is not None:
