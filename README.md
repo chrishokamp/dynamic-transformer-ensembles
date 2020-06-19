@@ -32,7 +32,7 @@ We fine-tune the `bart-large-cnn` single-document summarization model from the [
 Prediction and evaluation are done by the script `transformer_decoding/evaluate.py`
 There is also a `make` task for evaluation which simply calls this script.
 
-For example, to predict using a model id from `transformer`, or with a pretrained model checkpoint,
+For example, to predict using a model id from `transformers`, or with a fine-tuned model checkpoint,
 and evaluate with the Ghalandari et al. 2020 evaluation workflow:
 ```
 MODEL_ID=model_checkpoints/wcep_fine-tune-bart-large/checkpointepoch\=1.ckpt \
@@ -41,7 +41,7 @@ make evaluate
 ```
 - pretrained model checkpoints can be downloaded from the links above. 
 
-For a quick test, use the `--rows-to-eval` kwarg, which will only predict the first `N` rows from the dataset:
+For a quick test, use the `--rows-to-eval` argument, which will only predict the first `N` rows from the dataset:
 ```
 MODEL_ID=model_checkpoints/wcep_fine-tune-bart-large/checkpointepoch\=1.ckpt \
 RUN_FLAGS='--max-articles-in-cluster 5 --max-src-length 512 --max-tgt-length 64 --num-beams 5 --rows-to-eval 10 --eval-prefix wcep_5_articles_' \
