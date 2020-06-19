@@ -13,6 +13,8 @@ MDS datasets in the format required by the scripts in this repo:
 - [MultiNews](https://drive.google.com/drive/folders/1nuBM8aMjauA7bKOdPeQf6DeiR8-TeMaR?usp=sharing) (train, val, test)
 - [DUC2004](https://drive.google.com/drive/folders/1q11LDSGqan-zHiMgA8IiB-vnfIXz39IJ?usp=sharing) (test)
 
+----------------------
+
 ### Model Checkpoints and Outputs
 
 ##### Model Checkpoints
@@ -24,6 +26,7 @@ We fine-tune the `bart-large-cnn` single-document summarization model from the [
 
 - Download the outputs of fine-tuned models on the test sets of WCEP and MultiNews [here](https://drive.google.com/drive/folders/1dCwg-sd0bPiZZV7nDLOO2ZoUcCDRiO3V?usp=sharing)
 
+----------------------
 
 ### Evaluation
 Prediction and evaluation are done by the script `transformer_decoding/evaluate.py`
@@ -38,12 +41,21 @@ make evaluate
 ```
 - pretrained model checkpoints can be downloaded from the links above. 
 
+For a quick test, use the `--rows-to-eval` kwarg, which will only predict the first `N` rows from the dataset:
+```
+MODEL_ID=model_checkpoints/wcep_fine-tune-bart-large/checkpointepoch\=1.ckpt \
+RUN_FLAGS='--max-articles-in-cluster 5 --max-src-length 512 --max-tgt-length 64 --num-beams 5 --rows-to-eval 10 --eval-prefix wcep_5_articles_' \
+make evaluate
+```
+
 To run evaluation only, using previously generated predictions, supply the `--predictions` argument to `transformer_decoding/evaluate.py`:
 ```
 EVALUATION_DATASET=data/WCEP/test.jsonl \
 RUN_FLAGS='--predictions outputs/wcep/wcep_5_articles_eval_predicted_summaries.out' \
 make evaluate
 ```
+
+----------------------
 
 ### Citing
 
