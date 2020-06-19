@@ -25,6 +25,26 @@ We fine-tune the `bart-large-cnn` single-document summarization model from the [
 - Download the outputs of fine-tuned models on the test sets of WCEP and MultiNews [here](https://drive.google.com/drive/folders/1dCwg-sd0bPiZZV7nDLOO2ZoUcCDRiO3V?usp=sharing)
 
 
+### Evaluation
+Prediction and evaluation are done by the script `transformer_decoding/evaluate.py`
+There is also a `make` task for evaluation which simply calls this script.
+
+For example, to predict using a model id from `transformer`, or with a pretrained model checkpoint,
+and evaluate with the Ghalandari et al. 2020 evaluation workflow:
+```
+MODEL_ID=model_checkpoints/wcep_fine-tune-bart-large/checkpointepoch\=1.ckpt \
+RUN_FLAGS='--max-articles-in-cluster 5 --max-src-length 512 --max-tgt-length 64 --num-beams 5 --eval-prefix wcep_5_articles_' \
+make evaluate
+```
+- pretrained model checkpoints can be downloaded from the links above. 
+
+To run evaluation only, using previously generated predictions, supply the `--predictions` argument to `transformer_decoding/evaluate.py`:
+```
+EVALUATION_DATASET=data/WCEP/test.jsonl \
+RUN_FLAGS='--predictions outputs/wcep/wcep_5_articles_eval_predicted_summaries.out' \
+make evaluate
+```
+
 If you use ideas or code from this project, please cite:
 ```
 @article{DynamicEnsembles,
