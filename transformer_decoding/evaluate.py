@@ -272,16 +272,16 @@ class Summarizer:
     def __init__(self, config):
         self.model = config['model']
         self.tokenizer = config['tokenizer']
+    # NOTE: could factor out score computation vs reduction(?) -- wait for usecase
 
-    # TODO: factor out score computation vs reduction(?) -- wait for usecase
 
-
-#  we want to be able to ensemble
+#  eventually we want to be able to ensemble
 #  (1) different inputs, same model
 #  (2) same inputs, different models
 #  -- we should support arbitrary combinations of these, without too much
 #   cruft from configuration
-def summarize_articles(articles, args):
+
+def summarize_articles(articles, args, gold_summary=None):
     """
     Ensembled summarization of a cluster of articles
     """
@@ -293,15 +293,75 @@ def summarize_articles(articles, args):
         'num_beams': args['num_beams']
     }
 
+    # TODO: WORKING: add flag in ensemble state to let user force decode
+
     component_states = [decoding_utils.get_start_state(a, model, tokenizer, decoding_hyperparams)
                         for a in articles]
+
+    # Note we just pass the first article in cluster when building the ensemble state
     ensemble_state = decoding_utils.get_start_state(articles[0], model, tokenizer, decoding_hyperparams)
+
+    # ((batch) x |vocab| x timesteps)
+    timestep_mask = None
+    if args['force_decode_gold']:
+        # convert text to tensor
+        # Note currently hard-coded max gold summary length
+        encoded_gold = tokenizer.batch_encode_plus(
+            [gold_summary],
+            max_length=512,
+            pad_to_max_length=False,
+            return_tensors='pt'
+        )
+        gold_ids = encoded_gold['input_ids']
+
+        #tensor([[0, 83, 7814, 583, 5, 365, 212, 12, 11046, 5423,
+        #         5355, 4901, 3296, 9169, 24828, 11, 10838, 1688, 6, 1752,
+        #         6, 10469, 23, 513, 19353, 82, 6, 457, 9, 106,
+        #         249, 1024, 4, 2]])
+
+        #scatter(dim, index, src)
+        #scatter(dim, index, value)
+
+        #assert state['scores'].shape == (
+        #    ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size']), "Shapes of scores: {} != {}".format(
+        #    state['scores'].shape, (ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size'])
+        #)
+
+        # TODO: assert beam size and batch size are 1
+        # effectively we know our mask tensor for each timestep is (1, |vocab_size|), because batch size and beam size are 1 
+
+
+        # (timesteps, |vocab|)
+        # TODO WORKING: if there's a mask, use it (set everything else to `-float("inf")`
+        timestep_mask = torch.empty(gold_ids.shape[1], ensemble_state['vocab_size']).fill_(-float("inf"))
+        timestep_mask = timestep_mask.scatter(-1, gold_ids.T, 1.)[:, None, :]
+
+
+        # TODO: add a fake batch dim in the middle (unsqueeze) to become (timesteps, batch, |vocab|)
+
+        # scores for each sentence in the beam
+        #decoder_state['beam_scores'] = \
+        #    torch.zeros((decoder_state['batch_size'], decoder_state['num_beams']),
+        #                dtype=torch.float,
+        #                device=decoder_state['input_ids'].device)
+        #t = torch.empty(64, 3, 28, 28).fill_(32.)
+        #t = torch.ones(64, 3, 28, 28) * 32.
+
+        # TODO: WORKING: use pytorch.scatter to set values
+
+        # TODO: tokenizer vocab size
+        # TODO: zeros_like (batch, timesteps, vocab)
+        # TODO: potentially reindex to (timesteps, batch, vocab) so we can take per-timestep slices
+
+    # WORKING TODO: attach gold summary to ensemble state if user wants to force decode
+    # WORKING TODO: assert decoding hyperparams make sense if force-decoding (beam size = 1, etc...)
+    #if force decode, attach encoded gold summary to ensemble state
 
     component_states, ensemble_state = \
         decoding_utils.generate(component_states, decoding_hyperparams['max_tgt_length'],
-                                ensemble_state=ensemble_state)
+                                ensemble_state=ensemble_state, timestep_mask=timestep_mask)
 
-    # TODO: this logic might move to end of `generate` function(?)
+    # NOTE: this logic might move to end of `generate` function(?)
     # finalize all open beam hypotheses and end to generated hypotheses
     for batch_idx in range(ensemble_state['batch_size']):
         if ensemble_state['done'][batch_idx]:
@@ -392,7 +452,9 @@ def main(args):
                     articles_ = [articles[0]]
                 articles = articles_
 
-            predictions, sorted_hyps = summarize_articles(articles, args)
+            gold_summary = cluster['summary'].strip()
+
+            predictions, sorted_hyps = summarize_articles(articles, args, gold_summary=gold_summary)
             # sorted_hyps -- (token_idxs, score, metadata)
             # they're in sorted order according to ensemble score, so first one is the best
             # we will have one list of timestamp metadata for each cluster input
@@ -417,7 +479,6 @@ def main(args):
             print()
 
             predicted_summary = predictions[0]
-            gold_summary = cluster['summary'].strip()
             summaries.append((predicted_summary, gold_summary))
             preds_output.write(f'{predicted_summary}\n')
             gold_output.write(f'{gold_summary}\n')
@@ -524,8 +585,8 @@ def parse_args():
         '--max-articles-in-cluster',
         type=int,
         required=False,
-        default=None,
-        help='take the first K articles in each cluster to use in the ensemble'
+        default=5,
+        help='take K articles from each cluster to use in the ensemble'
     )
     parser.add_argument(
         '--rows-to-eval',
@@ -541,7 +602,13 @@ def parse_args():
         default='',
         help='If provided, prefix of output files'
     )
-    
+    parser.add_argument(
+        '--force-decode-gold',
+        required=False,
+        action='store_true',
+        help='if this flag is true, we force generation of the gold summary for each cluster'
+    )
+
     return parser.parse_args()
 
 

@@ -12,7 +12,7 @@ from transformer_decoding import decoding_utils, log
 logger = log.create_logger(__name__)
 
 
-def generate(component_states, timesteps, ensemble_state=None):
+def generate(component_states, timesteps, ensemble_state=None, timestep_mask=None):
     """
     Run generation for a number of timesteps
     """
@@ -24,9 +24,16 @@ def generate(component_states, timesteps, ensemble_state=None):
         for step_idx in range(timesteps):
             component_states[0] = decoding_utils.beam_search_step(component_states[0])
     else:
+        # TODO: support timestep masks on allowed tokens
+        # TODO: for forced decoding, the only allowed token is the next one from the gold summary
+        # TODO: other usecases have a static mask at all timesteps (i.e. only tokens from the inputs + stopwords, etc...)
+        # TODO: create a (sparse) tensor ((batch) x |vocab| x timesteps), at each timestep index in to get the output mask
+        step_mask = None
         for step_idx in range(timesteps):
+            if timestep_mask is not None:
+                step_mask = timestep_mask[step_idx]
             component_states, ensemble_state = \
-                decoding_utils.ensembled_beam_search_step(component_states, ensemble_state)
+                decoding_utils.ensembled_beam_search_step(component_states, ensemble_state, step_mask=step_mask)
 
     return component_states, ensemble_state
 
@@ -423,16 +430,22 @@ def apply_heuristics_to_logits(state):
 
 
 @torch.no_grad()
-def ensembled_beam_search_step(component_states, ensemble_state):
+def ensembled_beam_search_step(component_states, ensemble_state, step_mask=None):
     """
     Decoding hyperparams live in ensemble_state
     """
 
-    # TEMP: move this out of step function
     if 'decoding_stats' not in ensemble_state:
+        # fires on first decoding step
         ensemble_state['decoding_stats'] = []
         for _ in range(len(component_states)):
             ensemble_state['decoding_stats'].append([[] for _ in range(ensemble_state['num_beams'])])
+
+    # TODO WORKING: if there's a mask, use it (set everything else to `-float("inf")`
+    # TODO: this is effectively the reverse of the "bad_words_ids" logic below, in the mask case,
+    #  almost all words are bad, and _which_ words are bad change at each timestep
+
+    import ipdb; ipdb.set_trace()
 
     for state in component_states:
 
@@ -477,18 +490,30 @@ def ensembled_beam_search_step(component_states, ensemble_state):
             for i, banned_tokens in enumerate(banned_tokens):
                 state['scores'][i, banned_tokens] = -float("inf")
 
+        # TODO: WORKING: after all that, we're just going use the user provided-mask if it's there
+        # TODO: need to use numpy-style indexing or elementwise multiply for this
+        if step_mask is not None:
+            pass
+
         assert state['scores'].shape == (
             ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size']), "Shapes of scores: {} != {}".format(
             state['scores'].shape, (ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size'])
         )
 
+
         # if model has past, then set the past variable to speed up decoding
         if state['model']._use_cache(state['outputs'], use_cache=True):
             state['past'] = state['outputs'][1]
 
+
+    # WORKING: get the shape of the scores
+
+
     # just simple mean of logprobs as first try, later more sophisticated weighting
     # - TODO: inject reduce function with `torch.mean` as default
     ensemble_state['scores'] = torch.mean(torch.stack([s['scores'] for s in component_states]), dim=0)
+
+    # TODO: WORKING: add flag in ensemble state to let user force decode
 
     # BEGIN: ways of selecting next token from scores
     if ensemble_state['do_sample']:

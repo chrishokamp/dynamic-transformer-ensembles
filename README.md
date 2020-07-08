@@ -55,6 +55,16 @@ RUN_FLAGS='--predictions outputs/wcep/wcep_5_articles_eval_predicted_summaries.o
 make evaluate
 ```
 
+##### Scoring Gold Summaries by Forced Decoding
+
+```
+
+EVALUATION_DATASET=data/WCEP/test.jsonl \
+RUN_FLAGS='--force-decode-gold --max-articles-in-cluster 5 --max-src-length 512 --max-tgt-length 512 --num-beams 1 --rows-to-eval 10 --eval-prefix wcep_5_articles_' \
+make evaluate
+
+```
+
 ----------------------
 
 ### Citing
