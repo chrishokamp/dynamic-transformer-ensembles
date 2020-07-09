@@ -31,7 +31,10 @@ def generate(component_states, timesteps, ensemble_state=None, timestep_mask=Non
         step_mask = None
         for step_idx in range(timesteps):
             if timestep_mask is not None:
+                if step_idx == timestep_mask.shape[0] - 1:
+                    break
                 step_mask = timestep_mask[step_idx]
+
             component_states, ensemble_state = \
                 decoding_utils.ensembled_beam_search_step(component_states, ensemble_state, step_mask=step_mask)
 
@@ -441,12 +444,6 @@ def ensembled_beam_search_step(component_states, ensemble_state, step_mask=None)
         for _ in range(len(component_states)):
             ensemble_state['decoding_stats'].append([[] for _ in range(ensemble_state['num_beams'])])
 
-    # TODO WORKING: if there's a mask, use it (set everything else to `-float("inf")`
-    # TODO: this is effectively the reverse of the "bad_words_ids" logic below, in the mask case,
-    #  almost all words are bad, and _which_ words are bad change at each timestep
-
-    import ipdb; ipdb.set_trace()
-
     for state in component_states:
 
         state['outputs'] = outputs_from_state(state)
@@ -493,21 +490,21 @@ def ensembled_beam_search_step(component_states, ensemble_state, step_mask=None)
         # TODO: WORKING: after all that, we're just going use the user provided-mask if it's there
         # TODO: need to use numpy-style indexing or elementwise multiply for this
         if step_mask is not None:
-            pass
+            state['scores'] = state['scores'] * step_mask
 
         assert state['scores'].shape == (
             ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size']), "Shapes of scores: {} != {}".format(
             state['scores'].shape, (ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size'])
         )
 
-
         # if model has past, then set the past variable to speed up decoding
         if state['model']._use_cache(state['outputs'], use_cache=True):
             state['past'] = state['outputs'][1]
 
-
     # WORKING: get the shape of the scores
-
+    # TODO WORKING: if there's a mask, use it (set everything else to `-float("inf")`
+    # TODO: this is effectively the reverse of the "bad_words_ids" logic below, in the mask case,
+    #  almost all words are bad, and _which_ words are bad change at each timestep
 
     # just simple mean of logprobs as first try, later more sophisticated weighting
     # - TODO: inject reduce function with `torch.mean` as default
@@ -695,6 +692,8 @@ def ensembled_beam_search_step(component_states, ensemble_state, step_mask=None)
         state['cur_len'] = state['cur_len'] + 1
 
     ensemble_state['cur_len'] = ensemble_state['cur_len'] + 1
+
+    print(f'beam_scores: {ensemble_state["beam_scores"]}')
 
     return component_states, ensemble_state
 

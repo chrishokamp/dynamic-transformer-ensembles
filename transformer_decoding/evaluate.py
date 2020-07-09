@@ -330,12 +330,12 @@ def summarize_articles(articles, args, gold_summary=None):
         # TODO: assert beam size and batch size are 1
         # effectively we know our mask tensor for each timestep is (1, |vocab_size|), because batch size and beam size are 1 
 
-
         # (timesteps, |vocab|)
-        # TODO WORKING: if there's a mask, use it (set everything else to `-float("inf")`
-        timestep_mask = torch.empty(gold_ids.shape[1], ensemble_state['vocab_size']).fill_(-float("inf"))
+        # TODO WORKING: if there's a mask, use it (set everything else to `float("inf")`
+        # Note: since the mask is going to be elementwise-multiplied with logprobs, we set to float("inf") instead of
+        # -float("inf") so that the sign doesn't get flipped
+        timestep_mask = torch.empty(gold_ids.shape[1], ensemble_state['vocab_size']).fill_(float("inf"))
         timestep_mask = timestep_mask.scatter(-1, gold_ids.T, 1.)[:, None, :]
-
 
         # TODO: add a fake batch dim in the middle (unsqueeze) to become (timesteps, batch, |vocab|)
 
@@ -461,9 +461,7 @@ def main(args):
             length_penalty = args['length_penalty']
             component_scores = []
             for input_idx, state_metadata in enumerate(sorted_hyps[0][2]):
-
                 timestep_scores = np.array([o['score'] for o in state_metadata])
-
                 global_score = np.sum(timestep_scores) / len(timestep_scores) ** length_penalty
                 component_scores.append(global_score)
 
@@ -477,6 +475,8 @@ def main(args):
             print(f'Gold: {cluster["summary"]}')
             print(f'Predicted: {predictions[0]}')
             print()
+
+            import ipdb; ipdb.set_trace()
 
             predicted_summary = predictions[0]
             summaries.append((predicted_summary, gold_summary))
