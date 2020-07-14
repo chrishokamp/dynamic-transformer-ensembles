@@ -24,10 +24,6 @@ def generate(component_states, timesteps, ensemble_state=None, timestep_mask=Non
         for step_idx in range(timesteps):
             component_states[0] = decoding_utils.beam_search_step(component_states[0])
     else:
-        # TODO: support timestep masks on allowed tokens
-        # TODO: for forced decoding, the only allowed token is the next one from the gold summary
-        # TODO: other usecases have a static mask at all timesteps (i.e. only tokens from the inputs + stopwords, etc...)
-        # TODO: create a (sparse) tensor ((batch) x |vocab| x timesteps), at each timestep index in to get the output mask
         step_mask = None
         for step_idx in range(timesteps):
             if timestep_mask is not None:

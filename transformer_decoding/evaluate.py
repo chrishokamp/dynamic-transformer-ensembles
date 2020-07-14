@@ -314,48 +314,17 @@ def summarize_articles(articles, args, gold_summary=None):
         )
         gold_ids = encoded_gold['input_ids']
 
-        #tensor([[0, 83, 7814, 583, 5, 365, 212, 12, 11046, 5423,
-        #         5355, 4901, 3296, 9169, 24828, 11, 10838, 1688, 6, 1752,
-        #         6, 10469, 23, 513, 19353, 82, 6, 457, 9, 106,
-        #         249, 1024, 4, 2]])
-
-        #scatter(dim, index, src)
-        #scatter(dim, index, value)
-
-        #assert state['scores'].shape == (
-        #    ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size']), "Shapes of scores: {} != {}".format(
-        #    state['scores'].shape, (ensemble_state['batch_size'] * ensemble_state['num_beams'], ensemble_state['vocab_size'])
-        #)
-
-        # TODO: assert beam size and batch size are 1
-        # effectively we know our mask tensor for each timestep is (1, |vocab_size|), because batch size and beam size are 1 
-
         # (timesteps, |vocab|)
-        # TODO WORKING: if there's a mask, use it (set everything else to `float("inf")`
+        # set everything not in`float("inf")`
         # Note: since the mask is going to be elementwise-multiplied with logprobs, we set to float("inf") instead of
         # -float("inf") so that the sign doesn't get flipped
+        # effectively we know our mask tensor for each timestep is (1, |vocab_size|),
+        # because batch size and beam size are 1
         timestep_mask = torch.empty(gold_ids.shape[1], ensemble_state['vocab_size']).fill_(float("inf"))
         timestep_mask = timestep_mask.scatter(-1, gold_ids.T, 1.)[:, None, :]
 
-        # TODO: add a fake batch dim in the middle (unsqueeze) to become (timesteps, batch, |vocab|)
-
-        # scores for each sentence in the beam
-        #decoder_state['beam_scores'] = \
-        #    torch.zeros((decoder_state['batch_size'], decoder_state['num_beams']),
-        #                dtype=torch.float,
-        #                device=decoder_state['input_ids'].device)
-        #t = torch.empty(64, 3, 28, 28).fill_(32.)
-        #t = torch.ones(64, 3, 28, 28) * 32.
-
-        # TODO: WORKING: use pytorch.scatter to set values
-
-        # TODO: tokenizer vocab size
-        # TODO: zeros_like (batch, timesteps, vocab)
-        # TODO: potentially reindex to (timesteps, batch, vocab) so we can take per-timestep slices
-
     # WORKING TODO: attach gold summary to ensemble state if user wants to force decode
     # WORKING TODO: assert decoding hyperparams make sense if force-decoding (beam size = 1, etc...)
-    #if force decode, attach encoded gold summary to ensemble state
 
     component_states, ensemble_state = \
         decoding_utils.generate(component_states, decoding_hyperparams['max_tgt_length'],
@@ -467,7 +436,7 @@ def main(args):
 
             component_scores = np.array(component_scores)
             for idx in np.argsort(component_scores)[::-1]:
-                print(f'ARTICLE: {articles[idx][:200]}')
+                print(f'ARTICLE: {articles[idx][:1500]}')
                 print(f'Input {idx} score: {component_scores[idx]}')
                 print()
 
@@ -476,7 +445,11 @@ def main(args):
             print(f'Predicted: {predictions[0]}')
             print()
 
-            import ipdb; ipdb.set_trace()
+            # TODO: sometimes we hit -inf during forced decoding, debug this
+            # TODO: if big disparity between article scores, do something, store an input divergence score
+            # Note: reverse max / min because scores are logprobs
+            if component_scores.max() / sorted(component_scores)[-2] <= .65:
+                import ipdb; ipdb.set_trace()
 
             predicted_summary = predictions[0]
             summaries.append((predicted_summary, gold_summary))
