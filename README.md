@@ -13,6 +13,9 @@ MDS datasets in the format required by the scripts in this repo:
 - [MultiNews](https://drive.google.com/drive/folders/1nuBM8aMjauA7bKOdPeQf6DeiR8-TeMaR?usp=sharing) (train, val, test)
 - [DUC2004](https://drive.google.com/drive/folders/1q11LDSGqan-zHiMgA8IiB-vnfIXz39IJ?usp=sharing) (test)
 
+The original WCEP dataset used to generate the flat training data:
+- [WCEP in `.jsonl` format](https://drive.google.com/drive/folders/1PJufMEOdogIaKQq-PlB4vvawLa6tvEG6)
+
 ----------------------
 
 ### Model Checkpoints and Outputs
