@@ -20,7 +20,7 @@ MDS datasets in the format required by the scripts in this repo:
 ##### Model Checkpoints
 
 We fine-tune the `bart-large-cnn` single-document summarization model from the [transformers library](https://github.com/huggingface/transformers)
-- The best fine-tuned model checkpoints for WCEP and MultiNews are [here](https://drive.google.com/drive/folders/1dCwg-sd0bPiZZV7nDLOO2ZoUcCDRiO3V?usp=sharing)
+- The best fine-tuned model checkpoints for WCEP and MultiNews are [here](https://drive.google.com/drive/folders/1B449P6kwm6_6AjpaASduGMi3Ff6Z1IBd?usp=sharing)
 
 ##### Fine-tuned Model Outputs
 
