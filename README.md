@@ -4,7 +4,17 @@ This repo contains the code for [DynE: Dynamic Ensemble Decoding for Multi-Docum
 
 This code base can be used to add dynamic ensembling capability to models from the [Huggingface transformers library](https://github.com/huggingface/transformers).
 
-## :star: Complete README coming soon :star:
+## Setup / Installation
+
+```
+# make a fresh environment
+conda create -n dynamic-ensembles python=3.6
+conda activate dynamic-ensembles
+
+# Installation 
+make dev
+```
+
 
 ### Multi-Document Summarization (MDS) Datasets
 
